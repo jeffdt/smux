@@ -41,6 +41,13 @@ pub enum Action {
     SwitchWindow(String, u32),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum Row {
+    Session(usize),
+    Window(usize, usize),
+}
+
 use crate::store::Config;
 use std::collections::HashSet;
 
@@ -97,6 +104,76 @@ impl PickerState {
         out.extend(rest);
         out
     }
+
+    pub fn visible_rows(&self) -> Vec<Row> {
+        let ordered = self.ordered();
+        let mut rows = Vec::new();
+        for (si, sess) in ordered.iter().enumerate() {
+            rows.push(Row::Session(si));
+            if self.expanded.contains(&sess.name) {
+                for wi in 0..sess.windows.len() {
+                    rows.push(Row::Window(si, wi));
+                }
+            }
+        }
+        rows
+    }
+
+    pub fn move_cursor(&mut self, delta: i32) {
+        let len = self.visible_rows().len() as i32;
+        if len == 0 {
+            self.cursor = 0;
+            return;
+        }
+        let next = (self.cursor as i32 + delta).clamp(0, len - 1);
+        self.cursor = next as usize;
+    }
+
+    fn cursor_ordered_index(&self) -> Option<usize> {
+        let rows = self.visible_rows();
+        rows.get(self.cursor).map(|r| match r {
+            Row::Session(si) => *si,
+            Row::Window(si, _) => *si,
+        })
+    }
+
+    pub fn cursor_session_name(&self) -> Option<String> {
+        let si = self.cursor_ordered_index()?;
+        self.ordered().get(si).map(|s| s.name.clone())
+    }
+
+    pub fn is_expanded(&self, name: &str) -> bool {
+        self.expanded.contains(name)
+    }
+
+    #[allow(dead_code)]
+    pub fn expand(&mut self) {
+        if let Some(name) = self.cursor_session_name() {
+            self.expanded.insert(name);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn collapse(&mut self) {
+        if let Some(name) = self.cursor_session_name() {
+            self.expanded.remove(&name);
+            self.focus_session(&name);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn focus_session(&mut self, name: &str) {
+        let rows = self.visible_rows();
+        let ordered = self.ordered();
+        for (i, r) in rows.iter().enumerate() {
+            if let Row::Session(si) = r {
+                if ordered[*si].name == name {
+                    self.cursor = i;
+                    return;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -152,5 +229,38 @@ mod tests {
         let names: Vec<&str> = state.ordered().iter().map(|s| s.name.as_str()).collect();
         // both have activity 50, so sort by name ascending: apple before zebra
         assert_eq!(names, vec!["apple", "zebra"]);
+    }
+
+    #[test]
+    fn expand_reveals_windows_and_cursor_moves_over_them() {
+        let mut sessions = vec![s("a", 10, 1), s("b", 5, 2)];
+        sessions[0].windows = vec![
+            Window { index: 0, name: "e".into(), active: true },
+            Window { index: 1, name: "l".into(), active: false },
+        ];
+        let cfg = Config { pinned: vec![], sort: SortKey::Activity };
+        let mut state = PickerState::build(sessions, &cfg);
+
+        // Collapsed: two session rows only.
+        assert_eq!(state.visible_rows().len(), 2);
+
+        // Cursor on "a" (first), expand it.
+        assert_eq!(state.cursor_session_name().as_deref(), Some("a"));
+        state.expand();
+        assert!(state.is_expanded("a"));
+        assert!(!state.is_expanded("b"));
+        assert_eq!(state.visible_rows().len(), 4); // a, a:0, a:1, b
+
+        // Move down twice -> still within a's windows / onto b.
+        state.move_cursor(1);
+        state.move_cursor(1);
+        assert!(matches!(state.visible_rows()[state.cursor], Row::Window(0, 1)));
+
+        // Clamp at bottom.
+        state.move_cursor(5);
+        assert_eq!(state.cursor, 3);
+        // Clamp at top.
+        state.move_cursor(-99);
+        assert_eq!(state.cursor, 0);
     }
 }
