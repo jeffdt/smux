@@ -206,6 +206,20 @@ impl PickerState {
         self.dirty = true;
         self.focus_session(&name);
     }
+
+    pub fn selected_action(&self) -> Option<Action> {
+        let rows = self.visible_rows();
+        let ordered = self.ordered();
+        match rows.get(self.cursor)? {
+            Row::Session(si) => {
+                Some(Action::SwitchSession(ordered[*si].name.clone()))
+            }
+            Row::Window(si, wi) => {
+                let sess = ordered[*si];
+                Some(Action::SwitchWindow(sess.name.clone(), sess.windows[*wi].index))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -341,5 +355,24 @@ mod tests {
         assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
         // Out-of-bounds move must not dirty the state.
         assert!(!state.dirty);
+    }
+
+    #[test]
+    fn selected_action_session_vs_window() {
+        let mut sessions = vec![s("a", 30, 1)];
+        sessions[0].windows = vec![
+            Window { index: 0, name: "e".into(), active: true },
+            Window { index: 3, name: "l".into(), active: false },
+        ];
+        let cfg = Config { pinned: vec![], sort: SortKey::Activity };
+        let mut state = PickerState::build(sessions, &cfg);
+
+        // On the session row.
+        assert_eq!(state.selected_action(), Some(Action::SwitchSession("a".into())));
+
+        // Expand and move onto the second window (tmux index 3).
+        state.expand();
+        state.move_cursor(2);
+        assert_eq!(state.selected_action(), Some(Action::SwitchWindow("a".into(), 3)));
     }
 }
