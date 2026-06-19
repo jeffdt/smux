@@ -323,10 +323,23 @@ mod tests {
         state.move_pinned(1);
         assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
         assert_eq!(state.cursor_session_name().as_deref(), Some("a"));
+        // Verify dirty flag is set after successful swap.
+        assert!(state.dirty);
 
         // Focus the unpinned "c" and try to move it -> no-op.
         state.focus_session("c");
+        state.dirty = false;
         state.move_pinned(-1);
         assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
+        // Unpinned session move must not dirty the state.
+        assert!(!state.dirty);
+
+        // Out-of-bounds no-op: focus first pinned "b", try to move up beyond start.
+        state.focus_session("b");
+        state.dirty = false;
+        state.move_pinned(-1);
+        assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
+        // Out-of-bounds move must not dirty the state.
+        assert!(!state.dirty);
     }
 }
