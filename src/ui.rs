@@ -1,15 +1,43 @@
 use crate::model::{PickerState, Row, Session, Window};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const ACCENT: Color = Color::Cyan;
 const DIM: Color = Color::DarkGray;
 const DOT: Color = Color::Green;
 const SEL_BG: Color = Color::DarkGray;
 const META_COL: usize = 30;
+
+const FOOTER_HINT: &str = "↵ switch  ·  p pin  ·  ⇧J/⇧K move  ·  q quit";
+
+/// Format a duration in seconds as a compact human-readable string.
+pub fn fmt_age(secs: i64) -> String {
+    if secs < 0 {
+        return "0s".to_string();
+    }
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
+}
+
+fn activity_age(activity: i64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    fmt_age(now.saturating_sub(activity).max(0))
+}
 
 pub fn draw(frame: &mut Frame, state: &PickerState) {
     let area = frame.area();
@@ -23,6 +51,14 @@ pub fn draw(frame: &mut Frame, state: &PickerState) {
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // Split inner area: list region on top, 2-row footer at bottom.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(2)])
+        .split(inner);
+    let list_area = chunks[0];
+    let footer_area = chunks[1];
 
     let ordered = state.ordered();
     let rows = state.visible_rows();
@@ -39,11 +75,11 @@ pub fn draw(frame: &mut Frame, state: &PickerState) {
                 let sess = ordered[*si];
                 let pinned = state.is_pinned(&sess.name);
                 if pinned && !emitted_pinned_header {
-                    items.push(header_item("PINNED", inner.width));
+                    items.push(header_item("PINNED", list_area.width));
                     emitted_pinned_header = true;
                 }
                 if !pinned && !emitted_sessions_header {
-                    items.push(header_item("SESSIONS", inner.width));
+                    items.push(header_item("SESSIONS", list_area.width));
                     emitted_sessions_header = true;
                 }
                 if Some(*row) == cursor_row {
@@ -67,7 +103,15 @@ pub fn draw(frame: &mut Frame, state: &PickerState) {
     );
     let mut list_state = ListState::default();
     list_state.select(selected_line);
-    frame.render_stateful_widget(list, inner, &mut list_state);
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+
+    // Render the divider and hint row inside the footer area.
+    let rule = "─".repeat(footer_area.width as usize);
+    let footer = Paragraph::new(vec![
+        Line::from(Span::styled(rule, Style::default().fg(DIM))),
+        Line::from(Span::styled(FOOTER_HINT, Style::default().fg(DIM))),
+    ]);
+    frame.render_widget(footer, footer_area);
 }
 
 fn header_item(label: &str, width: u16) -> ListItem<'static> {
@@ -94,12 +138,13 @@ fn session_item(sess: &Session, pinned: bool, expanded: bool) -> ListItem<'stati
     let pad = META_COL.saturating_sub(prefix_len);
     let wins = sess.windows.len();
     let label = if wins == 1 { "window" } else { "windows" };
+    let age = activity_age(sess.activity);
     ListItem::new(Line::from(vec![
         Span::styled(pin.to_string(), Style::default().fg(ACCENT)),
         Span::styled(format!("{glyph} "), Style::default().fg(DIM)),
         Span::styled(sess.name.clone(), name_style),
         Span::styled(
-            format!("{}{wins} {label}", " ".repeat(pad)),
+            format!("{}{wins} {label} · {age}", " ".repeat(pad)),
             Style::default().fg(DIM),
         ),
     ]))
@@ -245,5 +290,30 @@ mod tests {
         assert_eq!(map_key(shift(KeyCode::Char('K'))), Input::MoveUp);
         assert_eq!(map_key(shift(KeyCode::Char('J'))), Input::MoveDown);
         assert_eq!(map_key(key(KeyCode::Char('x'))), Input::None);
+    }
+
+    #[test]
+    fn fmt_age_formats_durations() {
+        assert_eq!(fmt_age(0), "0s");
+        assert_eq!(fmt_age(30), "30s");
+        assert_eq!(fmt_age(59), "59s");
+        assert_eq!(fmt_age(120), "2m");
+        assert_eq!(fmt_age(7200), "2h");
+        assert_eq!(fmt_age(172800), "2d");
+        assert_eq!(fmt_age(-1), "0s");
+        assert_eq!(fmt_age(-100), "0s");
+    }
+
+    #[test]
+    fn draw_shows_footer_hints() {
+        let sessions = vec![
+            Session { name: "main".into(), activity: 100, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config { pinned: vec![], sort: SortKey::Activity };
+        let state = PickerState::build(sessions, &cfg);
+        let text = render_to_string(&state);
+        assert!(text.contains("switch"), "footer hint: switch present");
+        assert!(text.contains("quit"), "footer hint: quit present");
     }
 }
