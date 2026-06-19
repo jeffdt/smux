@@ -1,0 +1,18 @@
+[package]
+name = "smux"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "smux"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
