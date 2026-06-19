@@ -174,6 +174,38 @@ impl PickerState {
             }
         }
     }
+
+    pub fn toggle_pin(&mut self) {
+        let name = match self.cursor_session_name() {
+            Some(n) => n,
+            None => return,
+        };
+        if let Some(pos) = self.pinned.iter().position(|p| p == &name) {
+            self.pinned.remove(pos);
+        } else {
+            self.pinned.push(name.clone());
+        }
+        self.dirty = true;
+        self.focus_session(&name);
+    }
+
+    pub fn move_pinned(&mut self, delta: i32) {
+        let name = match self.cursor_session_name() {
+            Some(n) => n,
+            None => return,
+        };
+        let pos = match self.pinned.iter().position(|p| p == &name) {
+            Some(p) => p as i32,
+            None => return, // unpinned: nothing to reorder
+        };
+        let target = pos + delta;
+        if target < 0 || target >= self.pinned.len() as i32 {
+            return;
+        }
+        self.pinned.swap(pos as usize, target as usize);
+        self.dirty = true;
+        self.focus_session(&name);
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +294,39 @@ mod tests {
         // Clamp at top.
         state.move_cursor(-99);
         assert_eq!(state.cursor, 0);
+    }
+
+    #[test]
+    fn toggle_pin_adds_then_removes_and_marks_dirty() {
+        let sessions = vec![s("a", 30, 1), s("b", 20, 2)];
+        let cfg = Config { pinned: vec![], sort: SortKey::Activity };
+        let mut state = PickerState::build(sessions, &cfg);
+
+        // Cursor on "a"; pin it -> a becomes pinned, still focused.
+        state.toggle_pin();
+        assert_eq!(state.pinned, vec!["a".to_string()]);
+        assert!(state.dirty);
+        assert_eq!(state.cursor_session_name().as_deref(), Some("a"));
+
+        // Toggle again -> unpinned.
+        state.toggle_pin();
+        assert!(state.pinned.is_empty());
+    }
+
+    #[test]
+    fn move_pinned_reorders_within_pins_only() {
+        let sessions = vec![s("a", 30, 1), s("b", 20, 2), s("c", 10, 3)];
+        let cfg = Config { pinned: vec!["a".into(), "b".into()], sort: SortKey::Activity };
+        let mut state = PickerState::build(sessions, &cfg);
+
+        // Cursor starts on "a" (first pinned). Move it down -> [b, a].
+        state.move_pinned(1);
+        assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
+        assert_eq!(state.cursor_session_name().as_deref(), Some("a"));
+
+        // Focus the unpinned "c" and try to move it -> no-op.
+        state.focus_session("c");
+        state.move_pinned(-1);
+        assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
     }
 }
