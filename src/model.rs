@@ -143,4 +143,14 @@ mod tests {
         // created desc: a (100) before b (50)
         assert_eq!(names, vec!["a", "b"]);
     }
+
+    #[test]
+    fn ordered_breaks_ties_by_name_ascending() {
+        let sessions = vec![s("zebra", 50, 1), s("apple", 50, 2)];
+        let cfg = Config { pinned: vec![], sort: SortKey::Activity };
+        let state = PickerState::build(sessions, &cfg);
+        let names: Vec<&str> = state.ordered().iter().map(|s| s.name.as_str()).collect();
+        // both have activity 50, so sort by name ascending: apple before zebra
+        assert_eq!(names, vec!["apple", "zebra"]);
+    }
 }
