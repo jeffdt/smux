@@ -185,12 +185,13 @@ fn session_item(
 }
 
 fn window_item(win: &Window, last: bool, selected: bool) -> ListItem<'static> {
-    // Two leading spaces align under the session's number gutter.
+    // Two leading spaces align under the session's number gutter. No window
+    // number is shown: numbers are reserved for things you can jump to, and
+    // windows aren't jumpable yet.
     let connector = if last { "     └─ " } else { "     ├─ " };
     let dot = if win.active { "●" } else { " " };
     ListItem::new(Line::from(vec![
         Span::styled(connector.to_string(), secondary(selected)),
-        Span::styled(format!("{} ", win.index), secondary(selected)),
         Span::styled(format!("{dot} "), Style::default().fg(DOT)),
         Span::raw(win.name.clone()),
     ]))
