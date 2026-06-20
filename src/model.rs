@@ -223,14 +223,16 @@ impl PickerState {
     }
 
     /// Move the cursor to the session at 1-based display number `n` (pinned #1
-    /// down, the same stable order as `action_for_session_number`). Unlike a
-    /// plain-digit switch, this only relocates the highlight so the session can
-    /// be expanded and a window picked. No-op if `n` is 0 or out of range.
+    /// down, the same stable order as `action_for_session_number`) and expand it
+    /// so its windows show. Unlike a plain-digit switch, this only relocates the
+    /// highlight and reveals windows so one can be picked; it does not switch.
+    /// No-op if `n` is 0 or out of range.
     pub fn focus_session_number(&mut self, n: usize) {
         if n == 0 {
             return;
         }
         if let Some(name) = self.ordered().get(n - 1).map(|s| s.name.clone()) {
+            self.expanded.insert(name.clone());
             self.focus_session(&name);
         }
     }
@@ -430,8 +432,10 @@ mod tests {
 
         state.focus_session_number(3); // -> a
         assert_eq!(state.cursor_session_name().as_deref(), Some("a"));
+        assert!(state.is_expanded("a"), "focused session expands");
         state.focus_session_number(1); // -> c
         assert_eq!(state.cursor_session_name().as_deref(), Some("c"));
+        assert!(state.is_expanded("c"), "focused session expands");
 
         // Zero and out-of-range are no-ops (cursor stays put).
         state.focus_session_number(0);
