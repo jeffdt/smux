@@ -210,6 +210,31 @@ impl PickerState {
             }
         }
     }
+
+    /// Switch action for the session at 1-based display number `n` (pinned #1
+    /// down, stable regardless of what is expanded). `None` if out of range.
+    pub fn action_for_session_number(&self, n: usize) -> Option<Action> {
+        if n == 0 {
+            return None;
+        }
+        self.ordered()
+            .get(n - 1)
+            .map(|s| Action::SwitchSession(s.name.clone()))
+    }
+
+    /// Expand every session, or collapse all if everything is already expanded.
+    /// Keeps the cursor on the same session.
+    pub fn toggle_all(&mut self) {
+        let focus = self.cursor_session_name();
+        if self.expanded.len() >= self.all.len() {
+            self.expanded.clear();
+        } else {
+            self.expanded = self.all.iter().map(|s| s.name.clone()).collect();
+        }
+        if let Some(name) = focus {
+            self.focus_session(&name);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -364,5 +389,43 @@ mod tests {
         state.expand();
         state.move_cursor(2);
         assert_eq!(state.selected_action(), Some(Action::SwitchWindow("a".into(), 3)));
+    }
+
+    #[test]
+    fn action_for_session_number_uses_stable_pinned_first_order() {
+        let sessions = vec![s("a", 10, 1), s("b", 30, 2), s("c", 20, 3)];
+        let cfg = Config { pinned: vec!["c".into()], sort: SortKey::Activity };
+        let mut state = PickerState::build(sessions, &cfg); // order: c, b, a
+
+        assert_eq!(state.action_for_session_number(1), Some(Action::SwitchSession("c".into())));
+        assert_eq!(state.action_for_session_number(2), Some(Action::SwitchSession("b".into())));
+        assert_eq!(state.action_for_session_number(3), Some(Action::SwitchSession("a".into())));
+        assert_eq!(state.action_for_session_number(0), None);
+        assert_eq!(state.action_for_session_number(4), None);
+
+        // Numbers are stable even when a session is expanded (no renumbering).
+        state.expand(); // expands "c" (cursor at top)
+        assert_eq!(state.action_for_session_number(2), Some(Action::SwitchSession("b".into())));
+        assert_eq!(state.action_for_session_number(3), Some(Action::SwitchSession("a".into())));
+    }
+
+    #[test]
+    fn toggle_all_expands_then_collapses_keeping_focus() {
+        let sessions = vec![s("a", 30, 1), s("b", 20, 2)];
+        let cfg = Config { pinned: vec![], sort: SortKey::Activity };
+        let mut state = PickerState::build(sessions, &cfg);
+
+        assert_eq!(state.visible_rows().len(), 2); // both collapsed
+
+        state.toggle_all(); // expand all -> 2 sessions + 2 windows
+        assert!(state.is_expanded("a"));
+        assert!(state.is_expanded("b"));
+        assert_eq!(state.visible_rows().len(), 4);
+        assert_eq!(state.cursor_session_name().as_deref(), Some("a"));
+
+        state.toggle_all(); // collapse all
+        assert!(!state.is_expanded("a"));
+        assert!(!state.is_expanded("b"));
+        assert_eq!(state.visible_rows().len(), 2);
     }
 }

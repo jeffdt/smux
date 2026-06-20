@@ -13,7 +13,7 @@ const DOT: Color = Color::Green;
 const SEL_BG: Color = Color::DarkGray;
 const META_COL: usize = 30;
 
-const FOOTER_HINT: &str = "↵ switch  ·  p pin  ·  ⇧J/⇧K move  ·  q quit";
+const FOOTER_HINT: &str = "↵ switch · 1-9 jump · p pin · ⇧JK move · z all · q quit";
 
 /// Style for secondary text (expand glyph, metadata, tree connectors). On the
 /// selected row it drops to the default foreground so it matches the session
@@ -98,11 +98,15 @@ pub fn draw(frame: &mut Frame, state: &PickerState) {
                 if selected {
                     selected_line = Some(items.len());
                 }
+                // Stable jump number: 1-based position in the session order,
+                // for the first 9 sessions. Unaffected by what is expanded.
+                let number = if *si < 9 { Some(*si + 1) } else { None };
                 items.push(session_item(
                     sess,
                     pinned,
                     state.is_expanded(&sess.name),
                     selected,
+                    number,
                 ));
             }
             Row::Window(si, wi) => {
@@ -145,20 +149,31 @@ fn header_item(label: &str, width: u16) -> ListItem<'static> {
     ]))
 }
 
-fn session_item(sess: &Session, pinned: bool, expanded: bool, selected: bool) -> ListItem<'static> {
+fn session_item(
+    sess: &Session,
+    pinned: bool,
+    expanded: bool,
+    selected: bool,
+    number: Option<usize>,
+) -> ListItem<'static> {
     let glyph = if expanded { "▾" } else { "▸" };
     let pin = if pinned { "★ " } else { "  " };
+    let num = match number {
+        Some(n) => format!("{n} "),
+        None => "  ".to_string(),
+    };
     let name_style = if sess.attached {
         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
-    let prefix_len = 2 + 2 + sess.name.chars().count(); // pin + "glyph " + name
+    let prefix_len = 2 + 2 + 2 + sess.name.chars().count(); // num + pin + "glyph " + name
     let pad = META_COL.saturating_sub(prefix_len);
     let wins = sess.windows.len();
     let label = if wins == 1 { "window" } else { "windows" };
     let age = activity_age(sess.activity);
     ListItem::new(Line::from(vec![
+        Span::styled(num, secondary(selected)),
         Span::styled(pin.to_string(), Style::default().fg(ACCENT)),
         Span::styled(format!("{glyph} "), secondary(selected)),
         Span::styled(sess.name.clone(), name_style),
@@ -170,7 +185,8 @@ fn session_item(sess: &Session, pinned: bool, expanded: bool, selected: bool) ->
 }
 
 fn window_item(win: &Window, last: bool, selected: bool) -> ListItem<'static> {
-    let connector = if last { "   └─ " } else { "   ├─ " };
+    // Two leading spaces align under the session's number gutter.
+    let connector = if last { "     └─ " } else { "     ├─ " };
     let dot = if win.active { "●" } else { " " };
     ListItem::new(Line::from(vec![
         Span::styled(connector.to_string(), secondary(selected)),
@@ -187,7 +203,9 @@ pub enum Input {
     Down,
     Expand,
     Collapse,
+    ToggleAll,
     Select,
+    Switch(usize),
     Pin,
     MoveUp,
     MoveDown,
@@ -202,10 +220,12 @@ pub fn map_key(key: KeyEvent) -> Input {
         KeyCode::Char('k') | KeyCode::Up => Input::Up,
         KeyCode::Char('l') | KeyCode::Right => Input::Expand,
         KeyCode::Char('h') | KeyCode::Left => Input::Collapse,
+        KeyCode::Char('z') => Input::ToggleAll,
         KeyCode::Enter => Input::Select,
         KeyCode::Char('p') => Input::Pin,
         KeyCode::Char('K') if shift => Input::MoveUp,
         KeyCode::Char('J') if shift => Input::MoveDown,
+        KeyCode::Char(c @ '1'..='9') => Input::Switch(c as usize - '0' as usize),
         KeyCode::Char('q') | KeyCode::Esc => Input::Quit,
         _ => Input::None,
     }
@@ -229,7 +249,7 @@ mod tests {
     use ratatui::Terminal;
 
     fn render_to_string(state: &PickerState) -> String {
-        let backend = TestBackend::new(60, 20);
+        let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, state)).unwrap();
         let buf = terminal.backend().buffer().clone();
@@ -344,6 +364,10 @@ mod tests {
         assert_eq!(map_key(key(KeyCode::Esc)), Input::Quit);
         assert_eq!(map_key(shift(KeyCode::Char('K'))), Input::MoveUp);
         assert_eq!(map_key(shift(KeyCode::Char('J'))), Input::MoveDown);
+        assert_eq!(map_key(key(KeyCode::Char('z'))), Input::ToggleAll);
+        assert_eq!(map_key(key(KeyCode::Char('1'))), Input::Switch(1));
+        assert_eq!(map_key(key(KeyCode::Char('9'))), Input::Switch(9));
+        assert_eq!(map_key(key(KeyCode::Char('0'))), Input::None);
         assert_eq!(map_key(key(KeyCode::Char('x'))), Input::None);
     }
 
@@ -370,5 +394,36 @@ mod tests {
         let text = render_to_string(&state);
         assert!(text.contains("switch"), "footer hint: switch present");
         assert!(text.contains("quit"), "footer hint: quit present");
+    }
+
+    #[test]
+    fn draw_numbers_sessions_in_left_gutter() {
+        let sessions = vec![
+            Session { name: "main".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "other".into(), activity: 20, created: 2, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config { pinned: vec![], sort: SortKey::Activity };
+        let state = PickerState::build(sessions, &cfg); // main #1, other #2
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Inner content (excluding the left border at col 0) for each row.
+        let inner_line = |y: u16| -> String {
+            (1..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+        };
+        for y in 0..buf.area.height {
+            let line = inner_line(y);
+            if line.contains("main") {
+                assert!(line.starts_with("1 "), "main row gutter: got {line:?}");
+            }
+            if line.contains("other") {
+                assert!(line.starts_with("2 "), "other row gutter: got {line:?}");
+            }
+        }
     }
 }

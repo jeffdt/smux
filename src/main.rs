@@ -73,10 +73,16 @@ fn event_loop(
                 Input::Down => state.move_cursor(1),
                 Input::Expand => state.expand(),
                 Input::Collapse => state.collapse(),
+                Input::ToggleAll => state.toggle_all(),
                 Input::Pin => state.toggle_pin(),
                 Input::MoveUp => state.move_pinned(-1),
                 Input::MoveDown => state.move_pinned(1),
                 Input::Select => return Ok(state.selected_action()),
+                Input::Switch(n) => {
+                    if let Some(action) = state.action_for_session_number(n) {
+                        return Ok(Some(action));
+                    }
+                }
                 Input::Quit => return Ok(None),
                 Input::None => {}
             }
