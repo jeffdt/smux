@@ -1,8 +1,14 @@
 # smux
 
-A keyboard-driven tmux session picker. It replaces `prefix + s`: pinned
-sessions stay on top in an order you choose, the rest sort by recency, and each
-session expands into its windows. Opens on demand via `tmux popup -E`.
+An alternative to tmux's `prefix + s` session picker that adds pinned sessions
+without giving up the tree view. It stays close to the native picker on purpose,
+so it feels familiar rather than like a whole new tool to learn.
+
+**Pin the sessions you keep coming back to** so they always sit at the top in an
+order you choose: a session for PR reviews, one for your editor/AI config, one
+for your local dev stack. Everything else, the throwaway sessions you spin up for
+research or a feature and then abandon, sorts below by recency. Each session
+still expands into its windows, so you keep the tree view.
 
 ![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust&logoColor=white)
 ![TUI](https://img.shields.io/badge/TUI-ratatui-1f6feb)
@@ -23,6 +29,15 @@ bind S display-popup -E -w 80% -h 80% "exec smux"
 ```
 
 Reload tmux and press `prefix + Shift+S`.
+
+## How it works
+
+- **Pinned first.** Pinned sessions stay on top in your order; everything else
+  sorts by recency (or creation). Both persist across tmux restarts.
+- **Expandable tree.** Each session expands into its windows, choose-tree style.
+- **On demand, no daemon.** tmux launches it via `tmux popup -E`; it makes one
+  tmux query, renders, and exits. Its own overhead is a couple of milliseconds,
+  so it opens about as fast as tmux can answer.
 
 ## Keys
 
