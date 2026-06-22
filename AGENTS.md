@@ -90,6 +90,15 @@ smux ships as a prebuilt binary through a personal Homebrew tap, mirroring the
 
 ### Cutting a release
 
+**Every push to `main` that changes shipped behavior must also cut a release.**
+Users install via Homebrew, which only ever sees tagged release binaries, never
+`main`. A commit on `main` with no accompanying release is invisible to anyone
+who runs `brew upgrade`: the code is "shipped" in git but not to users. So
+unless a change is purely internal (docs, tests, CI, scratch under `specs/` or
+`plans/`), finish the job by running the steps below in the same session: bump,
+tag, wait for CI, and update the tap. Don't leave `main` ahead of the latest
+release.
+
 Everything lands on `main` (see "Working in this repo"). The tap is a separate
 repo, `jeffdt/homebrew-tap`; clone it if it isn't already checked out.
 
