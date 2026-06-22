@@ -98,4 +98,9 @@ Currently Apple Silicon only. Supporting Intel means adding
   `cargo build --release`.
 - Specs live in `specs/`, plans in `plans/`, the build ledger in
   `.superpowers/`; all three are git-ignored scratch, not part of the package.
-- `main` is the trunk. Feature branches use the `jeffdt/<domain>-<desc>` form.
+- **Commit straight to `main`.** This is a solo project with no PR or
+  branch-review gate: ordinary commits, version bumps, and release tags all land
+  directly on `main`. Do **not** open a feature branch or pull request here, the
+  global `jeffdt/<domain>-<desc>` branch convention does not apply to this repo.
+  A git-ignored `.claude/local/commit-to-main` marker makes the git-commit
+  workflow honor this without prompting or branching.
