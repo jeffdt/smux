@@ -1,4 +1,4 @@
-use crate::model::{PickerState, Row, Session, SortKey, Window};
+use crate::model::{Mode, PickerState, Row, Session, SortKey, Window};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -20,6 +20,8 @@ const POPUP_MARGIN: u16 = 2;
 
 const FOOTER_HINT: &str =
     "↵ switch · 1-9 jump · ⌥ focus · p pin · ⇧JK move · s sort · z all · q quit";
+
+const SEARCH_FOOTER_HINT: &str = "↵ switch · ↑↓ move · Esc back";
 
 /// Human label for the active sort mode, shown in the picker's title bar.
 fn mode_label(sort: SortKey) -> &'static str {
@@ -101,6 +103,13 @@ pub fn draw(frame: &mut Frame, state: &PickerState) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    match state.mode {
+        Mode::Command => draw_command(frame, state, inner),
+        Mode::Search => draw_search(frame, state, inner),
+    }
+}
+
+fn draw_command(frame: &mut Frame, state: &PickerState, inner: Rect) {
     // Split inner area: list region on top, 2-row footer at bottom.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -176,6 +185,55 @@ pub fn draw(frame: &mut Frame, state: &PickerState) {
         Line::from(Span::styled(FOOTER_HINT, Style::default().fg(DIM))),
     ]);
     frame.render_widget(footer, footer_area);
+}
+
+fn draw_search(frame: &mut Frame, state: &PickerState, inner: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // query prompt
+            Constraint::Min(0),    // results
+            Constraint::Length(2), // footer
+        ])
+        .split(inner);
+
+    let prompt = Line::from(vec![
+        Span::styled("search: ", Style::default().fg(DIM)),
+        Span::raw(state.query.clone()),
+        Span::styled("▏", Style::default().fg(ACCENT)),
+    ]);
+    frame.render_widget(Paragraph::new(prompt), chunks[0]);
+
+    let results = state.search_results();
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_line: Option<usize> = None;
+    if results.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "  no matches",
+            Style::default().fg(DIM),
+        ))));
+    } else {
+        for (i, sess) in results.iter().enumerate() {
+            let selected = i == state.search_cursor();
+            if selected {
+                selected_line = Some(items.len());
+            }
+            // Flat, collapsed, no jump number (None), normal metadata.
+            items.push(session_item(sess, state.is_pinned(&sess.name), false, selected, None));
+        }
+    }
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(SEL_BG).add_modifier(Modifier::BOLD));
+    let mut list_state = ListState::default();
+    list_state.select(selected_line);
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    let rule = "─".repeat(chunks[2].width as usize);
+    let footer = Paragraph::new(vec![
+        Line::from(Span::styled(rule, Style::default().fg(DIM))),
+        Line::from(Span::styled(SEARCH_FOOTER_HINT, Style::default().fg(DIM))),
+    ]);
+    frame.render_widget(footer, chunks[2]);
 }
 
 fn header_item(label: &str, width: u16) -> ListItem<'static> {
@@ -606,6 +664,50 @@ mod tests {
         assert_eq!(map_search_key(ctrl(KeyCode::Char('j'))), SearchInput::Down);
         // Ctrl-modified letters are nav/no-op, never query text.
         assert_eq!(map_search_key(ctrl(KeyCode::Char('a'))), SearchInput::None);
+    }
+
+    fn searching_state(query: &str) -> PickerState {
+        let sessions = vec![
+            Session { name: "pr-review".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "scratch".into(), activity: 20, created: 2, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config { pinned: vec!["pr-review".into()], manual_order: vec![], sort: SortKey::Activity };
+        let mut state = PickerState::build(sessions, &cfg);
+        state.enter_search();
+        for c in query.chars() {
+            state.search_push(c);
+        }
+        state
+    }
+
+    #[test]
+    fn draw_search_shows_prompt_and_filters() {
+        let text = render_to_string(&searching_state("pr"));
+        assert!(text.contains("search:"), "search prompt present");
+        assert!(text.contains("pr-review"), "match shown");
+        assert!(!text.contains("scratch"), "non-match hidden");
+    }
+
+    #[test]
+    fn draw_search_hides_headers_and_numbers() {
+        let text = render_to_string(&searching_state("pr"));
+        assert!(!text.contains("PINNED"), "no section headers in search");
+        assert!(!text.contains("SESSIONS"), "no section headers in search");
+        // No jump-number gutter: the pr-review row must not start with "1 ".
+        for line in text.lines() {
+            if line.contains("pr-review") {
+                assert!(!line.trim_start().starts_with("1 "), "no jump number: {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn draw_search_shows_no_matches_and_search_footer() {
+        let text = render_to_string(&searching_state("zzzzz"));
+        assert!(text.contains("no matches"), "empty-state line present");
+        assert!(text.contains("Esc"), "search footer present");
     }
 
     #[test]
