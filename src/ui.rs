@@ -19,7 +19,7 @@ const META_COL: usize = 30;
 const POPUP_MARGIN: u16 = 2;
 
 const FOOTER_HINT: &str =
-    "↵ switch · 1-9 jump · ⌥ focus · p pin · ⇧JK move · s sort · z all · q quit";
+    "/ search · 1-9 jump · p pin · ⇧JK move · s sort · z all · q quit";
 
 const SEARCH_FOOTER_HINT: &str = "↵ switch · ↑↓ move · Esc back";
 
@@ -568,8 +568,8 @@ mod tests {
         let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
         let text = render_to_string(&state);
-        assert!(text.contains("switch"), "footer hint: switch present");
-        assert!(text.contains("focus"), "footer hint: focus present");
+        assert!(text.contains("search"), "footer hint: search present");
+        assert!(text.contains("pin"), "footer hint: pin present");
         assert!(text.contains("sort"), "footer hint: sort present");
         assert!(text.contains("quit"), "footer hint: quit present");
     }
