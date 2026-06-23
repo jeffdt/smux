@@ -127,10 +127,16 @@ repo, `jeffdt/homebrew-tap`; clone it if it isn't already checked out.
    shasum -a 256 /tmp/r/smux-aarch64-apple-darwin
    ```
 
-4. In `jeffdt/homebrew-tap`'s `Formula/smux.rb`, update `version` (the download
-   URL interpolates `#{version}`, so it follows automatically) and `sha256`.
-   Also update the example keybind in the `caveats` block if it changed. Commit
-   and push the tap.
+4. In `jeffdt/homebrew-tap`'s `Formula/smux.rb`, bump the version in the `url`
+   (the full URL is hardcoded, e.g. `.../download/vX.Y.Z/smux-...`; there is no
+   separate `version` line, brew scans it from the URL) and update `sha256`.
+   Also update the example keybind in the `caveats` block if it changed. The
+   formula carries `depends_on arch: :arm64` and `depends_on :macos` and a
+   top-level `url` so the tap's `brew test-bot` CI passes; keep that shape (a
+   nested `on_macos`/`version`-line formula fails `readall`/`audit`). Validate
+   before pushing with `brew style jeffdt/tap`, `brew readall --aliases
+   --os=all --arch=all jeffdt/tap`, and `brew audit --except=installed
+   --tap=jeffdt/tap`. Commit and push the tap.
 5. Pick up the build locally: `brew update && brew upgrade jeffdt/tap/smux`,
    then confirm `smux --version`. If `~/.tmux.conf`'s `bind S` was temporarily
    pointed at a dev build (`target/release/smux`) for testing, revert its `exec`
