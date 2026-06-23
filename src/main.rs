@@ -9,12 +9,12 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::execute;
-use model::PickerState;
+use model::{Mode, PickerState};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{self, stdout};
 use tmux::{apply_action, RealTmux, Tmux};
-use ui::{draw, map_key, Input};
+use ui::{draw, map_key, map_search_key, Input, SearchInput};
 
 const HELP: &str = "\
 smux - a fast tmux session picker
@@ -100,27 +100,41 @@ fn event_loop(
             if key.kind != event::KeyEventKind::Press {
                 continue;
             }
-            match map_key(key) {
-                Input::Up => state.move_cursor(-1),
-                Input::Down => state.move_cursor(1),
-                Input::Expand => state.expand(),
-                Input::Collapse => state.collapse(),
-                Input::ToggleAll => state.toggle_all(),
-                Input::Pin => state.toggle_pin(),
-                Input::MoveUp => state.move_row(-1),
-                Input::MoveDown => state.move_row(1),
-                Input::CycleSort => state.cycle_sort(),
-                Input::Select => return Ok(state.selected_action()),
-                Input::Switch(n) => {
-                    if let Some(action) = state.action_for_session_number(n) {
-                        return Ok(Some(action));
+            match state.mode {
+                Mode::Command => match map_key(key) {
+                    Input::Up => state.move_cursor(-1),
+                    Input::Down => state.move_cursor(1),
+                    Input::Expand => state.expand(),
+                    Input::Collapse => state.collapse(),
+                    Input::ToggleAll => state.toggle_all(),
+                    Input::Pin => state.toggle_pin(),
+                    Input::MoveUp => state.move_row(-1),
+                    Input::MoveDown => state.move_row(1),
+                    Input::CycleSort => state.cycle_sort(),
+                    Input::EnterSearch => state.enter_search(),
+                    Input::Select => return Ok(state.selected_action()),
+                    Input::Switch(n) => {
+                        if let Some(action) = state.action_for_session_number(n) {
+                            return Ok(Some(action));
+                        }
                     }
-                }
-                Input::Focus(n) => state.focus_session_number(n),
-                Input::Quit => return Ok(None),
-                // Search mode is wired in Task 6; treat as no-op until then.
-                Input::EnterSearch => {}
-                Input::None => {}
+                    Input::Focus(n) => state.focus_session_number(n),
+                    Input::Quit => return Ok(None),
+                    Input::None => {}
+                },
+                Mode::Search => match map_search_key(key) {
+                    SearchInput::Char(c) => state.search_push(c),
+                    SearchInput::Backspace => state.search_backspace(),
+                    SearchInput::Up => state.search_move(-1),
+                    SearchInput::Down => state.search_move(1),
+                    SearchInput::Select => {
+                        if let Some(action) = state.search_selected_action() {
+                            return Ok(Some(action));
+                        }
+                    }
+                    SearchInput::Exit => state.exit_search(),
+                    SearchInput::None => {}
+                },
             }
         }
     }

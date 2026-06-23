@@ -316,8 +316,6 @@ pub enum Input {
     None,
 }
 
-// Wired in Task 6.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchInput {
     Char(char),
@@ -336,7 +334,6 @@ pub enum SearchInput {
 /// Enter, in which case it selects rather than moving down. Arrows, Ctrl-n,
 /// Ctrl-p, and Ctrl-k are the reliable movement keys; Ctrl-j is mapped for
 /// terminals that can distinguish it.
-#[allow(dead_code)] // wired in Task 6
 pub fn map_search_key(key: KeyEvent) -> SearchInput {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {

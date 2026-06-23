@@ -53,7 +53,6 @@ pub const INITIAL_FOCUS: InitialFocus = InitialFocus::CurrentSession;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Command,
-    #[allow(dead_code)] // scaffolding: used in Task 3+
     Search,
 }
 
@@ -100,11 +99,8 @@ pub struct PickerState {
     expanded: HashSet<String>,
     pub cursor: usize,
     pub dirty: bool,
-    #[allow(dead_code)] // scaffolding: wired into the UI by a later task
     pub mode: Mode,
-    #[allow(dead_code)] // scaffolding: wired into the UI by a later task
     pub query: String,
-    #[allow(dead_code)] // scaffolding: used in Task 3+
     search_cursor: usize,
 }
 
@@ -216,7 +212,6 @@ impl PickerState {
     /// The text a session is matched against in search. Today just its name; the
     /// seam where window names can later be folded in (a session matches if its
     /// name OR any window name matches) without touching the interaction layer.
-    #[allow(dead_code)] // scaffolding: called from search_results, wired into UI later
     fn session_haystack(s: &Session) -> String {
         s.name.clone()
     }
@@ -224,7 +219,6 @@ impl PickerState {
     /// Sessions for the current search query. Empty query returns the normal
     /// command-mode order; a non-empty query returns matches ranked best-first.
     /// Read-only -- never mutates state.
-    #[allow(dead_code)] // scaffolding: wired into the UI by a later task
     pub fn search_results(&self) -> Vec<&Session> {
         let base = self.ordered();
         if self.query.is_empty() {
@@ -388,7 +382,6 @@ impl PickerState {
         self.focus_session(&name);
     }
 
-    #[allow(dead_code)] // wired in Task 6
     pub fn enter_search(&mut self) {
         self.mode = Mode::Search;
         self.query.clear();
@@ -397,7 +390,6 @@ impl PickerState {
 
     /// Leave search for command mode, parking the command cursor on whatever match
     /// was highlighted so command verbs (pin, sort, reorder) act on it.
-    #[allow(dead_code)] // wired in Task 6
     pub fn exit_search(&mut self) {
         let landing = self.search_cursor_name();
         self.mode = Mode::Command;
@@ -408,19 +400,16 @@ impl PickerState {
         }
     }
 
-    #[allow(dead_code)] // wired in Task 6
     pub fn search_push(&mut self, c: char) {
         self.query.push(c);
         self.search_cursor = 0; // every query change re-selects the top match
     }
 
-    #[allow(dead_code)] // wired in Task 6
     pub fn search_backspace(&mut self) {
         self.query.pop();
         self.search_cursor = 0;
     }
 
-    #[allow(dead_code)] // wired in Task 6
     pub fn search_move(&mut self, delta: i32) {
         let len = self.search_results().len() as i32;
         if len == 0 {
@@ -432,19 +421,16 @@ impl PickerState {
     }
 
     /// Accessor for rendering (the field is private). Wired in Task 6.
-    #[allow(dead_code)] // wired in Task 6
     pub fn search_cursor(&self) -> usize {
         self.search_cursor
     }
 
-    #[allow(dead_code)] // wired in Task 6
     pub fn search_cursor_name(&self) -> Option<String> {
         self.search_results()
             .get(self.search_cursor)
             .map(|s| s.name.clone())
     }
 
-    #[allow(dead_code)] // wired in Task 6
     pub fn search_selected_action(&self) -> Option<Action> {
         self.search_results()
             .get(self.search_cursor)
