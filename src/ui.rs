@@ -253,8 +253,46 @@ pub enum Input {
     MoveUp,
     MoveDown,
     CycleSort,
+    EnterSearch,
     Quit,
     None,
+}
+
+// Wired in Task 6.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchInput {
+    Char(char),
+    Backspace,
+    Up,
+    Down,
+    Select,
+    Exit,
+    None,
+}
+
+/// Key mapping while in search mode. Printable characters (including digits)
+/// build the query; movement uses arrows plus the fzf/vim Ctrl pairs.
+///
+/// Note: under the legacy (non-kitty) encoding some terminals deliver Ctrl-j as
+/// Enter, in which case it selects rather than moving down. Arrows, Ctrl-n,
+/// Ctrl-p, and Ctrl-k are the reliable movement keys; Ctrl-j is mapped for
+/// terminals that can distinguish it.
+#[allow(dead_code)] // wired in Task 6
+pub fn map_search_key(key: KeyEvent) -> SearchInput {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Esc => SearchInput::Exit,
+        KeyCode::Enter => SearchInput::Select,
+        KeyCode::Backspace => SearchInput::Backspace,
+        KeyCode::Up => SearchInput::Up,
+        KeyCode::Down => SearchInput::Down,
+        KeyCode::Char('p') | KeyCode::Char('k') if ctrl => SearchInput::Up,
+        KeyCode::Char('n') | KeyCode::Char('j') if ctrl => SearchInput::Down,
+        KeyCode::Char(_) if ctrl => SearchInput::None,
+        KeyCode::Char(c) => SearchInput::Char(c),
+        _ => SearchInput::None,
+    }
 }
 
 pub fn map_key(key: KeyEvent) -> Input {
@@ -270,6 +308,7 @@ pub fn map_key(key: KeyEvent) -> Input {
         KeyCode::Char('K') if shift => Input::MoveUp,
         KeyCode::Char('J') if shift => Input::MoveDown,
         KeyCode::Char('s') => Input::CycleSort,
+        KeyCode::Char('/') => Input::EnterSearch,
         KeyCode::Char(c @ '1'..='9') if key.modifiers.contains(KeyModifiers::ALT) => {
             Input::Focus(c as usize - '0' as usize)
         }
@@ -291,6 +330,9 @@ mod tests {
     }
     fn alt(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::ALT)
+    }
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
     use crate::model::PickerState;
@@ -541,6 +583,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn slash_enters_search_in_command_mode() {
+        assert_eq!(map_key(key(KeyCode::Char('/'))), Input::EnterSearch);
+    }
+
+    #[test]
+    fn search_keys_map_to_query_edits_and_nav() {
+        assert_eq!(map_search_key(key(KeyCode::Char('a'))), SearchInput::Char('a'));
+        assert_eq!(map_search_key(key(KeyCode::Char('1'))), SearchInput::Char('1'));
+        assert_eq!(map_search_key(shift(KeyCode::Char('A'))), SearchInput::Char('A'));
+        assert_eq!(map_search_key(key(KeyCode::Backspace)), SearchInput::Backspace);
+        assert_eq!(map_search_key(key(KeyCode::Enter)), SearchInput::Select);
+        assert_eq!(map_search_key(key(KeyCode::Esc)), SearchInput::Exit);
+        assert_eq!(map_search_key(key(KeyCode::Up)), SearchInput::Up);
+        assert_eq!(map_search_key(key(KeyCode::Down)), SearchInput::Down);
+        assert_eq!(map_search_key(ctrl(KeyCode::Char('p'))), SearchInput::Up);
+        assert_eq!(map_search_key(ctrl(KeyCode::Char('k'))), SearchInput::Up);
+        assert_eq!(map_search_key(ctrl(KeyCode::Char('n'))), SearchInput::Down);
+        assert_eq!(map_search_key(ctrl(KeyCode::Char('j'))), SearchInput::Down);
+        // Ctrl-modified letters are nav/no-op, never query text.
+        assert_eq!(map_search_key(ctrl(KeyCode::Char('a'))), SearchInput::None);
     }
 
     #[test]

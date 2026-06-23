@@ -118,6 +118,8 @@ fn event_loop(
                 }
                 Input::Focus(n) => state.focus_session_number(n),
                 Input::Quit => return Ok(None),
+                // Search mode is wired in Task 6; treat as no-op until then.
+                Input::EnterSearch => {}
                 Input::None => {}
             }
         }
