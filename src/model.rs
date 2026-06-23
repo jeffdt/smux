@@ -897,6 +897,7 @@ mod tests {
         let names: Vec<&str> = state.search_results().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names.first().copied(), Some("pr-review"), "strong match first");
         assert!(!names.contains(&"scratch"), "non-match omitted");
+        assert!(!names.contains(&"provision"), "non-matching session excluded");
     }
 
     #[test]
@@ -963,6 +964,35 @@ mod tests {
         state.search_push('z');
         state.search_push('z');
         assert_eq!(state.search_selected_action(), None);
+    }
+
+    #[test]
+    fn search_backspace_shrinks_query_and_clears_to_empty() {
+        let sessions = vec![s("api-gateway", 30, 1), s("web", 20, 2)];
+        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let mut state = PickerState::build(sessions, &cfg);
+
+        state.enter_search();
+        state.search_push('a');
+        state.search_push('p');
+        assert_eq!(state.query, "ap");
+
+        // One backspace shrinks by one character.
+        state.search_backspace();
+        assert_eq!(state.query, "a", "backspace removes the last char");
+        assert_eq!(state.search_cursor(), 0, "cursor resets to top after backspace");
+
+        // Backspace on a single-char query produces an empty string.
+        state.search_backspace();
+        assert!(state.query.is_empty(), "query is empty after backspace");
+        assert_eq!(state.search_cursor(), 0);
+
+        // Backspace on an already-empty query is a no-op (does not panic).
+        state.search_backspace();
+        assert!(state.query.is_empty(), "extra backspace on empty query is a no-op");
+
+        // Search is read-only: no mutation, no dirty flag.
+        assert!(!state.dirty, "search backspace never dirties state");
     }
 
     #[test]

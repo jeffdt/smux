@@ -8,7 +8,6 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 ///
 /// This is the only place the fuzzy matcher is touched, so the matcher can be
 /// swapped without disturbing the model or UI (cf. the `SortKey` seam).
-#[allow(dead_code)] // Wired into the model/UI by a later task.
 pub fn rank(query: &str, candidates: &[impl AsRef<str>]) -> Vec<usize> {
     let atom = Atom::new(
         query,
