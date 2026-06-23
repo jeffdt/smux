@@ -21,7 +21,7 @@ const POPUP_MARGIN: u16 = 2;
 const FOOTER_HINT: &str =
     "/ search · 1-9 jump · p pin · ⇧JK move · s sort · z all · q quit";
 
-const SEARCH_FOOTER_HINT: &str = "↵ switch · ↑↓ move · Esc back";
+const SEARCH_FOOTER_HINT: &str = "↑↓ move · Esc back";
 
 /// Human label for the active sort mode, shown in the picker's title bar.
 fn mode_label(sort: SortKey) -> &'static str {
