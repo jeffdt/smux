@@ -1,4 +1,5 @@
 mod model;
+mod search;
 mod store;
 mod tmux;
 mod ui;
