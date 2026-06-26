@@ -160,4 +160,7 @@ Currently Apple Silicon only. Supporting Intel means adding
   to keep `main` linear) purely for the audit trail; this is a solo project with
   no human review gate, so the PR exists for history, not approval. Release tags
   are cut on `main` after the merge (see "Cutting a release"). The version bump
-  rides in the same PR as the shipped change.
+  rides in the same PR as the shipped change. If the session was kicked off from
+  a GitHub issue on this repo (i.e. an issue number was mentioned in the
+  session), reference it in the PR body with `Closes #N` so the issue links and
+  auto-closes on merge.
