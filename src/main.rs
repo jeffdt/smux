@@ -1,3 +1,4 @@
+mod debug;
 mod model;
 mod search;
 mod store;
@@ -14,7 +15,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{self, stdout};
 use tmux::{apply_action, RealTmux, Tmux};
-use ui::{draw, map_key, map_search_key, Input, SearchInput};
+use ui::{draw, map_group_key, map_key, map_search_key, GroupInput, Input, SearchInput};
 
 const HELP: &str = "\
 smux - a fast tmux session picker
@@ -45,7 +46,16 @@ fn main() -> io::Result<()> {
         }
     }
 
-    let tmux = RealTmux;
+    debug::log(|| {
+        format!(
+            "start: version={} TMUX={:?} XDG_CONFIG_HOME={:?}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::var("TMUX").ok(),
+            std::env::var("XDG_CONFIG_HOME").ok(),
+        )
+    });
+
+    let tmux = RealTmux::new();
     let gathered = tmux.gather();
     let live: Vec<String> = gathered.sessions.iter().map(|s| s.name.clone()).collect();
 
@@ -58,13 +68,14 @@ fn main() -> io::Result<()> {
     let mut state = PickerState::build(gathered.sessions, &config);
     state.refocus_current(gathered.current.as_deref());
     if state.visible_rows().is_empty() {
+        debug::log(|| "exit: no visible rows (empty gather) -> returning immediately".into());
         return Ok(()); // nothing to pick
     }
 
     let action = run_ui(&mut state)?;
 
     if state.dirty {
-        config.pinned = state.pinned.clone();
+        config.groups = state.groups.clone();
         config.manual_order = state.manual_order.clone();
         config.sort = state.sort;
         let _ = config.save_to(&path);
@@ -107,7 +118,7 @@ fn event_loop(
                     Input::Expand => state.expand(),
                     Input::Collapse => state.collapse(),
                     Input::ToggleAll => state.toggle_all(),
-                    Input::Pin => state.toggle_pin(),
+                    Input::EnterGroups => state.enter_groups(),
                     Input::MoveUp => state.move_row(-1),
                     Input::MoveDown => state.move_row(1),
                     Input::CycleSort => state.cycle_sort(),
@@ -137,6 +148,32 @@ fn event_loop(
                     SearchInput::Exit => state.exit_search(),
                     SearchInput::None => {}
                 },
+                Mode::Groups => {
+                    if state.group_editing() {
+                        match map_search_key(key) {
+                            SearchInput::Char(c) => state.group_edit_push(c),
+                            SearchInput::Backspace => state.group_edit_backspace(),
+                            SearchInput::DeleteWord => state.group_edit_delete_word(),
+                            SearchInput::Clear => state.group_edit_clear(),
+                            SearchInput::Select => state.group_commit_rename(),
+                            SearchInput::Exit => state.group_cancel_rename(),
+                            SearchInput::Up | SearchInput::Down | SearchInput::None => {}
+                        }
+                    } else {
+                        match map_group_key(key) {
+                            GroupInput::Up => state.group_move_cursor(-1),
+                            GroupInput::Down => state.group_move_cursor(1),
+                            GroupInput::MoveUp => state.group_reorder(-1),
+                            GroupInput::MoveDown => state.group_reorder(1),
+                            GroupInput::New => state.group_new(),
+                            GroupInput::Rename => state.group_start_rename(),
+                            GroupInput::CycleColor => state.group_cycle_color(),
+                            GroupInput::Delete => state.group_delete(),
+                            GroupInput::Exit => state.exit_groups(),
+                            GroupInput::None => {}
+                        }
+                    }
+                }
             }
         }
     }

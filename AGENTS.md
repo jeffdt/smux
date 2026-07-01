@@ -16,16 +16,28 @@ These are the reasons the project exists. Changes should preserve them.
 
 - **Fast and on-demand.** Opens in well under 100ms. Gathers all state in a
   single tmux subprocess call, renders, and exits. No daemon, no caching layer.
-- **Pinned-first, then sorted.** Pinned sessions stay on top in a user-defined
-  order; everything else follows the active sort mode. Three modes cycle in the
-  picker (the `s` key): recency, age (creation), and manual. In manual mode the
-  unpinned order is user-defined and reordered with the same `⇧J/⇧K` keys that
-  reorder pins; new/unlisted sessions always sink to the bottom. Pins, the
-  active mode, and the manual order all persist across tmux restarts.
+- **Named groups first, then sorted.** Sessions are curated into an arbitrary
+  number of durable, user-named groups that stay on top in a user-defined order;
+  everything else falls into the residual `SESSIONS` bucket, which follows the
+  active sort mode. Three modes cycle in the picker (the `s` key): recency, age
+  (creation), and manual; the mode governs only `SESSIONS` (named groups are
+  always manual order). In `SESSIONS` manual mode the order is user-defined and
+  reordered with the same `⇧J/⇧K` keys; new/unlisted sessions sink to the bottom.
+  Groups, their order, the active mode, and the manual order all persist across
+  tmux restarts. Groups are durable: they survive empty and vanish only via an
+  explicit delete (there is intentionally no auto-prune). A legacy single
+  `pinned` list migrates to one group named `PINNED`.
+- **Two altitudes, two modes.** Session mode operates on sessions (switch, jump,
+  move a session across group boundaries with `⇧J/⇧K`, search). A dedicated
+  full-screen group mode (`g`) operates only on group structure (create, rename,
+  delete, reorder) and never shows sessions. Entering group mode costs a
+  deliberate `g`, so once inside it is frictionless: no confirmation prompts, and
+  create drops straight into inline naming.
 - **Collapsible session/window tree.** Sessions expand into their windows, with
   a choose-tree feel but calmer behavior (see "Numbering philosophy").
-- **Keyboard-driven, in-picker mutation.** Pin/unpin, reorder pins, expand,
-  jump, and focus, all from the picker. Mutations persist immediately.
+- **Keyboard-driven, in-picker mutation.** Group membership, group structure,
+  reorder, expand, jump, and focus, all from the picker. Mutations persist
+  immediately.
 - **Aesthetics matter.** The picker should be pleasant to open and use. It
   respects the user's terminal theme rather than imposing its own colors.
 - **Type-to-filter search.** Press `/` to enter a read-only fuzzy filter;
@@ -48,8 +60,9 @@ These are deliberate and have driven past work. Do not reverse them casually.
   what lets the picker inherit the user's theme (e.g. Nord). A hardcoded RGB
   value is a regression.
 - **Numbering philosophy.** Numbers mean "jumpable." Only sessions are
-  jumpable, so only sessions are numbered. Numbering is stable, pinned-first,
-  continuous, capped at 1-9, and **never renumbers on expand**. This is the
+  jumpable, so only sessions are numbered. Numbering is stable, grouped-first
+  (named-group members first, then `SESSIONS`), continuous, capped at 1-9, and
+  **never renumbers on expand**. This is the
   intentional divergence from tmux choose-tree, which renumbers every visible
   line as the tree opens. Plain digit switches and closes; `Option/Alt + digit`
   focuses and expands a session without switching (uses the legacy ESC-prefix
@@ -71,16 +84,21 @@ These are deliberate and have driven past work. Do not reverse them casually.
   future `default_mode` config key (deferred, not shipped). During search,
   section headers and 1-9 jump numbers are suppressed by design (digits are
   query text; numbers cannot be stable when results re-rank on every keystroke).
-  The pinned star marker still shows. Window-name matching is intentionally
-  reachable via the `session_haystack` seam in `src/model.rs` but is not built.
+  Window-name matching is intentionally reachable via the `session_haystack`
+  seam in `src/model.rs` but is not built.
 
 ## Configuration
 
 User config persists to `$XDG_CONFIG_HOME/smux/config.toml` (else
-`~/.config/smux/config.toml`): a `pinned` list, a `manual_order` list (the
-user-defined order for manual sort mode), and a `sort` key (`activity`,
-`created`, or `manual`). Users normally never edit it by hand; the picker writes
-it on pin/reorder/sort-cycle.
+`~/.config/smux/config.toml`): a `[[groups]]` array (each with a `name`, an
+ordered `members` list, and an optional `color` from the named palette in
+`HEADER_COLORS`; empty/absent means the positional default, and `c` in group
+mode flips it), a `manual_order` list (the user-defined order for the
+`SESSIONS` manual sort mode), and a `sort` key (`activity`, `created`, or
+`manual`). A legacy top-level `pinned` list is still read and migrates to a
+single group named `PINNED`. Users normally never edit it by hand; the picker
+writes it on group/membership/reorder/sort-cycle. Groups are never auto-pruned;
+`reconcile` drops dead members but keeps the group.
 
 ## Packaging and distribution
 

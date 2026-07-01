@@ -1,4 +1,4 @@
-use crate::model::{Mode, PickerState, Row, Session, SortKey, Window};
+use crate::model::{Group, Mode, PickerState, Row, Session, SortKey, Window, HEADER_COLORS};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -14,9 +14,9 @@ const SEL_BG: Color = Color::DarkGray;
 /// Default column where a session's metadata begins, used when every visible
 /// name is short. It is also the floor for the shared metadata column.
 const META_COL: usize = 30;
-/// Fixed cells preceding a session name: jump number (2) + pin star (2) +
-/// expand glyph and its trailing space (2).
-const SESSION_PREFIX: usize = 6;
+/// Fixed cells preceding a session name: jump number (2) + expand glyph and
+/// its trailing space (2).
+const SESSION_PREFIX: usize = 4;
 /// Minimum gap kept between the longest visible name and its metadata when the
 /// shared column is anchored to that name rather than to META_COL.
 const META_GAP: usize = 2;
@@ -30,7 +30,7 @@ const META_BUDGET: usize = 18;
 const POPUP_MARGIN: u16 = 2;
 
 const FOOTER_HINT: &str =
-    "/ search · 1-9 jump · p pin · ⇧JK move · s sort · z all · q quit";
+    "/ search · 1-9 jump · ⇧JK move · g groups · s sort · z all · q quit";
 
 const SEARCH_FOOTER_HINT: &str = "↑↓ move · ⌃W word · ⌃U clear · Esc back";
 
@@ -117,6 +117,7 @@ pub fn draw(frame: &mut Frame, state: &PickerState) {
     match state.mode {
         Mode::Command => draw_command(frame, state, inner),
         Mode::Search => draw_search(frame, state, inner),
+        Mode::Groups => draw_groups(frame, state, inner),
     }
 }
 
@@ -141,27 +142,40 @@ fn draw_command(frame: &mut Frame, state: &PickerState, inner: Rect) {
     });
     let meta = MetaLayout::compute(session_refs, list_area.width);
 
+    let group_ids = state.ordered_group_ids();
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_line: Option<usize> = None;
-    let mut emitted_pinned_header = false;
-    let mut emitted_sessions_header = false;
+    let mut last_section: Option<Option<usize>> = None;
+    // Named groups whose header is already emitted are those with index < this.
+    // Empty groups produce no session rows, so we "catch up" and emit their bare
+    // (dimmed) headers when we pass their position or at the end of the list.
+    let mut next_group: usize = 0;
 
     for row in rows.iter() {
         match row {
             Row::Session(si) => {
                 let sess = ordered[*si];
-                let pinned = state.is_pinned(&sess.name);
-                if pinned && !emitted_pinned_header {
-                    items.push(header_item("PINNED", list_area.width));
-                    emitted_pinned_header = true;
-                }
-                if !pinned && !emitted_sessions_header {
-                    // Blank spacer to separate the PINNED section above.
-                    if emitted_pinned_header {
-                        items.push(ListItem::new(Line::from("")));
+                let section = group_ids[*si];
+                if last_section != Some(section) {
+                    let target = match section {
+                        Some(gi) => gi,
+                        None => state.groups.len(),
+                    };
+                    while next_group < target {
+                        push_empty_group_header(&mut items, &state.groups[next_group].name, list_area.width);
+                        next_group += 1;
                     }
-                    items.push(header_item("SESSIONS", list_area.width));
-                    emitted_sessions_header = true;
+                    match section {
+                        Some(gi) => {
+                            let color = group_color(&state.groups[gi], gi);
+                            push_section_header(&mut items, &state.groups[gi].name.to_uppercase(), list_area.width, color);
+                            next_group = gi + 1;
+                        }
+                        None => {
+                            push_section_header(&mut items, "SESSIONS", list_area.width, ACCENT);
+                        }
+                    }
+                    last_section = Some(section);
                 }
                 let selected = Some(*row) == cursor_row;
                 if selected {
@@ -172,7 +186,6 @@ fn draw_command(frame: &mut Frame, state: &PickerState, inner: Rect) {
                 let number = if *si < 9 { Some(*si + 1) } else { None };
                 items.push(session_item(
                     sess,
-                    pinned,
                     state.is_expanded(&sess.name),
                     selected,
                     number,
@@ -189,6 +202,11 @@ fn draw_command(frame: &mut Frame, state: &PickerState, inner: Rect) {
                 items.push(window_item(&sess.windows[*wi], last, selected));
             }
         }
+    }
+    // Trailing empty groups (after the last session row, with no residual below).
+    while next_group < state.groups.len() {
+        push_empty_group_header(&mut items, &state.groups[next_group].name, list_area.width);
+        next_group += 1;
     }
 
     let list = List::new(items).highlight_style(
@@ -240,7 +258,7 @@ fn draw_search(frame: &mut Frame, state: &PickerState, inner: Rect) {
                 selected_line = Some(items.len());
             }
             // Flat, collapsed, no jump number (None), normal metadata.
-            items.push(session_item(sess, state.is_pinned(&sess.name), false, selected, None, meta));
+            items.push(session_item(sess, false, selected, None, meta));
         }
     }
     let list = List::new(items)
@@ -257,12 +275,105 @@ fn draw_search(frame: &mut Frame, state: &PickerState, inner: Rect) {
     frame.render_widget(footer, chunks[2]);
 }
 
-fn header_item(label: &str, width: u16) -> ListItem<'static> {
+const GROUP_FOOTER_HINT: &str = "Enter rename · n new · c color · d delete · ⇧JK reorder · Esc back";
+
+fn draw_groups(frame: &mut Frame, state: &PickerState, inner: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(2)])
+        .split(inner);
+    let list_area = chunks[0];
+    let footer_area = chunks[1];
+
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_line: Option<usize> = None;
+    for (gi, g) in state.groups.iter().enumerate() {
+        let selected = gi == state.group_cursor();
+        if selected { selected_line = Some(items.len()); }
+        let editing = selected && state.group_editing();
+        let line = if editing {
+            let buf = state.group_edit_buffer().unwrap_or("");
+            Line::from(vec![
+                Span::styled(buf.to_uppercase(), Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled("▏", Style::default().fg(ACCENT)),
+            ])
+        } else {
+            // Empty groups read as dimmed shelves, matching session mode;
+            // populated groups show their (flippable) header color.
+            let name_color = if g.members.is_empty() { DIM } else { group_color(g, gi) };
+            Line::from(vec![
+                Span::styled(g.name.to_uppercase(),
+                    Style::default().fg(name_color).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("  · {}", g.members.len()), secondary(selected)),
+            ])
+        };
+        items.push(ListItem::new(line));
+    }
+    // Dimmed, non-editable residual anchor for context.
+    items.push(ListItem::new(Line::from(Span::styled(
+        format!("SESSIONS  · {}", state.residual_count()),
+        Style::default().fg(DIM),
+    ))));
+
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(SEL_BG).add_modifier(Modifier::BOLD));
+    let mut list_state = ListState::default();
+    list_state.select(selected_line);
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+
+    let rule = "─".repeat(footer_area.width as usize);
+    let footer = Paragraph::new(vec![
+        Line::from(Span::styled(rule, Style::default().fg(DIM))),
+        Line::from(Span::styled(GROUP_FOOTER_HINT, Style::default().fg(DIM))),
+    ]);
+    frame.render_widget(footer, footer_area);
+}
+
+/// Map a `HEADER_COLORS` name to a named ANSI color (never RGB, so headers
+/// follow the terminal theme). `magenta` is the Nord purple. Unknown names fall
+/// back to the accent so a hand-edited config can never crash the picker.
+fn color_from_name(name: &str) -> Color {
+    match name {
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "magenta" => Color::Magenta,
+        "blue" => Color::Blue,
+        "red" => Color::Red,
+        _ => Color::Cyan,
+    }
+}
+
+/// The header color for the group at `index`: its explicit color, or the
+/// positional default `HEADER_COLORS[index]` when unset.
+fn group_color(group: &Group, index: usize) -> Color {
+    let name = if group.color.is_empty() {
+        HEADER_COLORS[index % HEADER_COLORS.len()]
+    } else {
+        group.color.as_str()
+    };
+    color_from_name(name)
+}
+
+/// Push a section header, preceding it with a blank spacer unless it is the very
+/// first item in the list.
+fn push_section_header(items: &mut Vec<ListItem<'static>>, label: &str, width: u16, color: Color) {
+    if !items.is_empty() {
+        items.push(ListItem::new(Line::from("")));
+    }
+    items.push(header_item(label, width, color));
+}
+
+/// Push a bare, dimmed header for an empty named group (a labeled shelf to fill).
+fn push_empty_group_header(items: &mut Vec<ListItem<'static>>, name: &str, width: u16) {
+    push_section_header(items, &name.to_uppercase(), width, DIM);
+}
+
+fn header_item(label: &str, width: u16, color: Color) -> ListItem<'static> {
     let rule_len = (width as usize).saturating_sub(label.chars().count() + 2);
     ListItem::new(Line::from(vec![
         Span::styled(
             label.to_string(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
         Span::styled("─".repeat(rule_len), Style::default().fg(DIM)),
@@ -305,49 +416,39 @@ impl MetaLayout {
 
 fn session_item(
     sess: &Session,
-    pinned: bool,
     expanded: bool,
     selected: bool,
     number: Option<usize>,
     meta: MetaLayout,
 ) -> ListItem<'static> {
     let glyph = if expanded { "▾" } else { "▸" };
-    let pin = if pinned { "★ " } else { "  " };
-    let num = match number {
-        Some(n) => format!("{n} "),
-        None => "  ".to_string(),
-    };
+    let num = match number { Some(n) => format!("{n} "), None => "  ".to_string() };
     let name_style = if sess.attached {
         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
-    let prefix_len = SESSION_PREFIX + sess.name.chars().count(); // num + pin + "glyph " + name
+    let prefix_len = SESSION_PREFIX + sess.name.chars().count(); // num + "glyph " + name
     let pad = meta.col.saturating_sub(prefix_len);
     let count = window_count(sess.windows.len());
     let count_pad = meta.count_width.saturating_sub(count.chars().count());
     let age = activity_age(sess.activity);
     ListItem::new(Line::from(vec![
         Span::styled(num, secondary(selected)),
-        Span::styled(pin.to_string(), Style::default().fg(ACCENT)),
         Span::styled(format!("{glyph} "), secondary(selected)),
         Span::styled(sess.name.clone(), name_style),
         Span::styled(
-            format!(
-                "{}{count}{} · {age}",
-                " ".repeat(pad),
-                " ".repeat(count_pad),
-            ),
+            format!("{}{count}{} · {age}", " ".repeat(pad), " ".repeat(count_pad)),
             secondary(selected),
         ),
     ]))
 }
 
 fn window_item(win: &Window, last: bool, selected: bool) -> ListItem<'static> {
-    // Two leading spaces align under the session's number gutter. No window
+    // Three leading spaces align under the session's number gutter. No window
     // number is shown: numbers are reserved for things you can jump to, and
     // windows aren't jumpable yet.
-    let connector = if last { "     └─ " } else { "     ├─ " };
+    let connector = if last { "   └─ " } else { "   ├─ " };
     let dot = if win.active { "●" } else { " " };
     ListItem::new(Line::from(vec![
         Span::styled(connector.to_string(), secondary(selected)),
@@ -367,7 +468,7 @@ pub enum Input {
     Select,
     Switch(usize),
     Focus(usize),
-    Pin,
+    EnterGroups,
     MoveUp,
     MoveDown,
     CycleSort,
@@ -387,6 +488,27 @@ pub enum SearchInput {
     Select,
     Exit,
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupInput { Up, Down, MoveUp, MoveDown, New, Rename, CycleColor, Delete, Exit, None }
+
+/// Key mapping for group-management mode while NOT editing a name. During an
+/// inline rename the loop routes keys through `map_search_key` instead.
+pub fn map_group_key(key: KeyEvent) -> GroupInput {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => GroupInput::Down,
+        KeyCode::Char('k') | KeyCode::Up => GroupInput::Up,
+        KeyCode::Char('J') if shift => GroupInput::MoveDown,
+        KeyCode::Char('K') if shift => GroupInput::MoveUp,
+        KeyCode::Char('n') => GroupInput::New,
+        KeyCode::Enter | KeyCode::Char('r') => GroupInput::Rename,
+        KeyCode::Char('c') => GroupInput::CycleColor,
+        KeyCode::Char('d') => GroupInput::Delete,
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('g') => GroupInput::Exit,
+        _ => GroupInput::None,
+    }
 }
 
 /// Key mapping while in search mode. Printable characters (including digits)
@@ -425,7 +547,7 @@ pub fn map_key(key: KeyEvent) -> Input {
         KeyCode::Char('h') | KeyCode::Left => Input::Collapse,
         KeyCode::Char('z') => Input::ToggleAll,
         KeyCode::Enter => Input::Select,
-        KeyCode::Char('p') => Input::Pin,
+        KeyCode::Char('g') => Input::EnterGroups,
         KeyCode::Char('K') if shift => Input::MoveUp,
         KeyCode::Char('J') if shift => Input::MoveDown,
         KeyCode::Char('s') => Input::CycleSort,
@@ -456,8 +578,7 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
-    use crate::model::PickerState;
-    use crate::model::{Session, SortKey, Window};
+    use crate::model::{Group, PickerState, Session, SortKey, Window};
     use crate::store::Config;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -485,7 +606,11 @@ mod tests {
             Session { name: "scratch".into(), activity: 20, created: 2, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec!["pr-review".into()], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config {
+            groups: vec![Group { name: "PINNED".into(), members: vec!["pr-review".into()], color: String::new() }],
+            manual_order: vec![],
+            sort: SortKey::Activity,
+        };
         let state = PickerState::build(sessions, &cfg);
         let text = render_to_string(&state);
         assert!(text.contains("smux"), "title present");
@@ -501,7 +626,7 @@ mod tests {
             Session { name: "alpha".into(), activity: 30, created: 1, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
 
         let backend = TestBackend::new(60, 20);
@@ -538,7 +663,7 @@ mod tests {
             Session { name: "alpha".into(), activity: 30, created: 1, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg); // cursor on alpha (row 0)
 
         let backend = TestBackend::new(60, 20);
@@ -574,7 +699,8 @@ mod tests {
         assert_eq!(map_key(key(KeyCode::Right)), Input::Expand);
         assert_eq!(map_key(key(KeyCode::Char('h'))), Input::Collapse);
         assert_eq!(map_key(key(KeyCode::Enter)), Input::Select);
-        assert_eq!(map_key(key(KeyCode::Char('p'))), Input::Pin);
+        assert_eq!(map_key(key(KeyCode::Char('g'))), Input::EnterGroups);
+        assert_eq!(map_key(key(KeyCode::Char('p'))), Input::None);
         assert_eq!(map_key(key(KeyCode::Char('q'))), Input::Quit);
         assert_eq!(map_key(key(KeyCode::Esc)), Input::Quit);
         assert_eq!(map_key(shift(KeyCode::Char('K'))), Input::MoveUp);
@@ -605,7 +731,7 @@ mod tests {
                 attached: false,
                 windows: vec![Window { index: 0, name: "w".into(), active: true }],
             }];
-            let cfg = Config { pinned: vec![], manual_order: vec![], sort };
+            let cfg = Config { groups: vec![], manual_order: vec![], sort };
             render_to_string(&PickerState::build(sessions, &cfg))
         };
         assert!(mode_text(SortKey::Activity).contains("recency"), "recency label");
@@ -626,16 +752,101 @@ mod tests {
     }
 
     #[test]
+    fn draw_no_longer_renders_pin_star() {
+        let sessions = vec![
+            Session { name: "claude".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config { groups: vec![Group { name: "G".into(), members: vec!["claude".into()], color: String::new() }],
+                           manual_order: vec![], sort: SortKey::Activity };
+        let text = render_to_string(&PickerState::build(sessions, &cfg));
+        assert!(!text.contains('★'), "pin star retired");
+    }
+
+    #[test]
+    fn draw_shows_multiple_group_headers_in_order() {
+        let sessions = vec![
+            Session { name: "claude".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "tent".into(), activity: 20, created: 2, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "ticket".into(), activity: 10, created: 3, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config {
+            groups: vec![
+                Group { name: "config".into(), members: vec!["claude".into()], color: String::new() },
+                Group { name: "tools".into(), members: vec!["tent".into()], color: String::new() },
+            ],
+            manual_order: vec![], sort: SortKey::Activity,
+        };
+        let state = PickerState::build(sessions, &cfg);
+        let text = render_to_string(&state);
+        assert!(text.contains("CONFIG"), "group name uppercased");
+        assert!(text.contains("TOOLS"));
+        assert!(text.contains("SESSIONS"));
+        let (c, t, s) = (text.find("CONFIG"), text.find("TOOLS"), text.find("SESSIONS"));
+        assert!(c < t && t < s, "sections render top-to-bottom");
+    }
+
+    #[test]
+    fn draw_shows_empty_group_header_dimmed_in_session_mode() {
+        // A named group with no members must still render its header (a shelf to
+        // fill), grayed out, and it sits in config order between the group above
+        // and the residual SESSIONS below.
+        let sessions = vec![
+            Session { name: "claude".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "loose".into(), activity: 10, created: 2, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config {
+            groups: vec![
+                Group { name: "config".into(), members: vec!["claude".into()], color: String::new() },
+                Group { name: "tools".into(), members: vec![], color: String::new() }, // empty shelf
+            ],
+            manual_order: vec![], sort: SortKey::Activity,
+        };
+        let state = PickerState::build(sessions, &cfg);
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let mut text = String::new();
+        let mut tools_dim = false;
+        let mut config_accent = false;
+        for y in 0..buf.area.height {
+            let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            text.push_str(&line);
+            text.push('\n');
+            let first_letter = |needle: &str| line.find(needle).map(|i| i as u16);
+            if let Some(x) = first_letter("TOOLS") {
+                tools_dim = buf[(x, y)].style().fg == Some(Color::DarkGray);
+            }
+            if let Some(x) = first_letter("CONFIG") {
+                config_accent = buf[(x, y)].style().fg == Some(ACCENT);
+            }
+        }
+        // Order: CONFIG (populated) then TOOLS (empty) then SESSIONS (residual).
+        let (c, t, s) = (text.find("CONFIG"), text.find("TOOLS"), text.find("SESSIONS"));
+        assert!(c < t && t < s, "empty group header sits in order: got {c:?} {t:?} {s:?}");
+        assert!(tools_dim, "empty group header renders dimmed (gray)");
+        assert!(config_accent, "populated group header keeps the accent color");
+    }
+
+    #[test]
     fn draw_shows_footer_hints() {
         let sessions = vec![
             Session { name: "main".into(), activity: 100, created: 1, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
         let text = render_to_string(&state);
         assert!(text.contains("search"), "footer hint: search present");
-        assert!(text.contains("pin"), "footer hint: pin present");
+        assert!(text.contains("groups"), "footer hint: groups present");
         assert!(text.contains("sort"), "footer hint: sort present");
         assert!(text.contains("quit"), "footer hint: quit present");
     }
@@ -648,7 +859,7 @@ mod tests {
             Session { name: "other".into(), activity: 20, created: 2, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg); // main #1, other #2
 
         let backend = TestBackend::new(60, 20);
@@ -699,7 +910,7 @@ mod tests {
             Session { name: "short".into(), activity: 20, created: 2, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
 
         let backend = TestBackend::new(80, 20);
@@ -728,7 +939,7 @@ mod tests {
             Session { name: "beta".into(), activity: 20, created: 2, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
 
         let backend = TestBackend::new(80, 20);
@@ -751,7 +962,7 @@ mod tests {
             Session { name: "other".into(), activity: 20, created: 2, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
 
         let backend = TestBackend::new(80, 20);
@@ -775,7 +986,7 @@ mod tests {
             Session { name: "alpha".into(), activity: 30, created: 1, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
 
         let (w, h) = (60u16, 20u16);
@@ -840,7 +1051,11 @@ mod tests {
             Session { name: "scratch".into(), activity: 20, created: 2, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec!["pr-review".into()], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config {
+            groups: vec![Group { name: "PINNED".into(), members: vec!["pr-review".into()], color: String::new() }],
+            manual_order: vec![],
+            sort: SortKey::Activity,
+        };
         let mut state = PickerState::build(sessions, &cfg);
         state.enter_search();
         for c in query.chars() {
@@ -878,12 +1093,101 @@ mod tests {
     }
 
     #[test]
+    fn group_keys_map_to_ops() {
+        assert_eq!(map_group_key(key(KeyCode::Char('j'))), GroupInput::Down);
+        assert_eq!(map_group_key(key(KeyCode::Char('k'))), GroupInput::Up);
+        assert_eq!(map_group_key(shift(KeyCode::Char('J'))), GroupInput::MoveDown);
+        assert_eq!(map_group_key(shift(KeyCode::Char('K'))), GroupInput::MoveUp);
+        assert_eq!(map_group_key(key(KeyCode::Char('n'))), GroupInput::New);
+        assert_eq!(map_group_key(key(KeyCode::Enter)), GroupInput::Rename);
+        assert_eq!(map_group_key(key(KeyCode::Char('r'))), GroupInput::Rename);
+        assert_eq!(map_group_key(key(KeyCode::Char('c'))), GroupInput::CycleColor);
+        assert_eq!(map_group_key(key(KeyCode::Char('d'))), GroupInput::Delete);
+        assert_eq!(map_group_key(key(KeyCode::Esc)), GroupInput::Exit);
+        assert_eq!(map_group_key(key(KeyCode::Char('q'))), GroupInput::Exit);
+        assert_eq!(map_group_key(key(KeyCode::Char('g'))), GroupInput::Exit);
+        assert_eq!(map_group_key(key(KeyCode::Char('x'))), GroupInput::None);
+    }
+
+    #[test]
+    fn draw_colors_group_header_by_its_color_in_session_mode() {
+        // An explicit group color paints its header; a color-less group falls
+        // back to the positional default (HEADER_COLORS[0] == cyan == ACCENT).
+        let sessions = vec![
+            Session { name: "claude".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "tent".into(), activity: 20, created: 2, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config {
+            groups: vec![
+                Group { name: "config".into(), members: vec!["claude".into()], color: String::new() },
+                Group { name: "tools".into(), members: vec!["tent".into()], color: "magenta".into() },
+            ],
+            manual_order: vec![], sort: SortKey::Activity,
+        };
+        let state = PickerState::build(sessions, &cfg);
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let mut config_cyan = false;
+        let mut tools_magenta = false;
+        for y in 0..buf.area.height {
+            let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(i) = line.find("CONFIG") {
+                config_cyan = buf[(i as u16, y)].style().fg == Some(Color::Cyan);
+            }
+            if let Some(i) = line.find("TOOLS") {
+                tools_magenta = buf[(i as u16, y)].style().fg == Some(Color::Magenta);
+            }
+        }
+        assert!(config_cyan, "color-less group uses positional default (cyan)");
+        assert!(tools_magenta, "explicit magenta group header is purple");
+    }
+
+    fn groups_view(edit: bool) -> PickerState {
+        let sessions = vec![
+            Session { name: "claude".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "ticket".into(), activity: 10, created: 2, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config { groups: vec![Group { name: "config".into(), members: vec!["claude".into()], color: String::new() }],
+                           manual_order: vec![], sort: SortKey::Activity };
+        let mut st = PickerState::build(sessions, &cfg);
+        st.enter_groups();
+        if edit { st.group_start_rename(); }
+        st
+    }
+
+    #[test]
+    fn draw_groups_lists_group_with_count_and_residual_anchor() {
+        let text = render_to_string(&groups_view(false));
+        assert!(text.contains("CONFIG"), "group header");
+        assert!(text.contains("· 1"), "member count");
+        assert!(text.contains("SESSIONS"), "residual anchor");
+        assert!(text.contains("Enter rename"), "group footer");
+    }
+
+    #[test]
+    fn draw_groups_shows_inline_rename_field() {
+        let mut st = groups_view(true);
+        st.group_edit_clear();
+        for c in "misc".chars() { st.group_edit_push(c); }
+        let text = render_to_string(&st);
+        assert!(text.contains("MISC"), "inline buffer uppercased");
+    }
+
+    #[test]
     fn draw_is_graceful_on_tiny_popup() {
         let sessions = vec![
             Session { name: "alpha".into(), activity: 30, created: 1, attached: false,
                       windows: vec![Window { index: 0, name: "w".into(), active: true }] },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
 
         // Smaller than 2*margin+1: must not panic and must keep its size.
