@@ -117,8 +117,7 @@ pub fn draw(frame: &mut Frame, state: &PickerState) {
     match state.mode {
         Mode::Command => draw_command(frame, state, inner),
         Mode::Search => draw_search(frame, state, inner),
-        // Groups draw is implemented in Task 4; route to command view temporarily.
-        Mode::Groups => draw_command(frame, state, inner),
+        Mode::Groups => draw_groups(frame, state, inner),
     }
 }
 
@@ -257,6 +256,57 @@ fn draw_search(frame: &mut Frame, state: &PickerState, inner: Rect) {
     frame.render_widget(footer, chunks[2]);
 }
 
+const GROUP_FOOTER_HINT: &str = "Enter rename · n new · d delete · ⇧JK reorder · Esc back";
+
+fn draw_groups(frame: &mut Frame, state: &PickerState, inner: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(2)])
+        .split(inner);
+    let list_area = chunks[0];
+    let footer_area = chunks[1];
+
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_line: Option<usize> = None;
+    for (gi, g) in state.groups.iter().enumerate() {
+        let selected = gi == state.group_cursor();
+        if selected { selected_line = Some(items.len()); }
+        let editing = selected && state.group_editing();
+        let line = if editing {
+            let buf = state.group_edit_buffer().unwrap_or("");
+            Line::from(vec![
+                Span::styled(buf.to_uppercase(), Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled("▏", Style::default().fg(ACCENT)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled(g.name.to_uppercase(),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("  · {}", g.members.len()), secondary(selected)),
+            ])
+        };
+        items.push(ListItem::new(line));
+    }
+    // Dimmed, non-editable residual anchor for context.
+    items.push(ListItem::new(Line::from(Span::styled(
+        format!("SESSIONS  · {}", state.residual_count()),
+        Style::default().fg(DIM),
+    ))));
+
+    let list = List::new(items)
+        .highlight_style(Style::default().bg(SEL_BG).add_modifier(Modifier::BOLD));
+    let mut list_state = ListState::default();
+    list_state.select(selected_line);
+    frame.render_stateful_widget(list, list_area, &mut list_state);
+
+    let rule = "─".repeat(footer_area.width as usize);
+    let footer = Paragraph::new(vec![
+        Line::from(Span::styled(rule, Style::default().fg(DIM))),
+        Line::from(Span::styled(GROUP_FOOTER_HINT, Style::default().fg(DIM))),
+    ]);
+    frame.render_widget(footer, footer_area);
+}
+
 fn header_item(label: &str, width: u16) -> ListItem<'static> {
     let rule_len = (width as usize).saturating_sub(label.chars().count() + 2);
     ListItem::new(Line::from(vec![
@@ -334,7 +384,7 @@ fn session_item(
 }
 
 fn window_item(win: &Window, last: bool, selected: bool) -> ListItem<'static> {
-    // Two leading spaces align under the session's number gutter. No window
+    // Three leading spaces align under the session's number gutter. No window
     // number is shown: numbers are reserved for things you can jump to, and
     // windows aren't jumpable yet.
     let connector = if last { "   └─ " } else { "   ├─ " };
@@ -377,6 +427,26 @@ pub enum SearchInput {
     Select,
     Exit,
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupInput { Up, Down, MoveUp, MoveDown, New, Rename, Delete, Exit, None }
+
+/// Key mapping for group-management mode while NOT editing a name. During an
+/// inline rename the loop routes keys through `map_search_key` instead.
+pub fn map_group_key(key: KeyEvent) -> GroupInput {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => GroupInput::Down,
+        KeyCode::Char('k') | KeyCode::Up => GroupInput::Up,
+        KeyCode::Char('J') if shift => GroupInput::MoveDown,
+        KeyCode::Char('K') if shift => GroupInput::MoveUp,
+        KeyCode::Char('n') => GroupInput::New,
+        KeyCode::Enter | KeyCode::Char('r') => GroupInput::Rename,
+        KeyCode::Char('d') => GroupInput::Delete,
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('g') => GroupInput::Exit,
+        _ => GroupInput::None,
+    }
 }
 
 /// Key mapping while in search mode. Printable characters (including digits)
@@ -911,6 +981,55 @@ mod tests {
         let text = render_to_string(&searching_state("zzzzz"));
         assert!(text.contains("no matches"), "empty-state line present");
         assert!(text.contains("Esc"), "search footer present");
+    }
+
+    #[test]
+    fn group_keys_map_to_ops() {
+        assert_eq!(map_group_key(key(KeyCode::Char('j'))), GroupInput::Down);
+        assert_eq!(map_group_key(key(KeyCode::Char('k'))), GroupInput::Up);
+        assert_eq!(map_group_key(shift(KeyCode::Char('J'))), GroupInput::MoveDown);
+        assert_eq!(map_group_key(shift(KeyCode::Char('K'))), GroupInput::MoveUp);
+        assert_eq!(map_group_key(key(KeyCode::Char('n'))), GroupInput::New);
+        assert_eq!(map_group_key(key(KeyCode::Enter)), GroupInput::Rename);
+        assert_eq!(map_group_key(key(KeyCode::Char('r'))), GroupInput::Rename);
+        assert_eq!(map_group_key(key(KeyCode::Char('d'))), GroupInput::Delete);
+        assert_eq!(map_group_key(key(KeyCode::Esc)), GroupInput::Exit);
+        assert_eq!(map_group_key(key(KeyCode::Char('q'))), GroupInput::Exit);
+        assert_eq!(map_group_key(key(KeyCode::Char('g'))), GroupInput::Exit);
+        assert_eq!(map_group_key(key(KeyCode::Char('x'))), GroupInput::None);
+    }
+
+    fn groups_view(edit: bool) -> PickerState {
+        let sessions = vec![
+            Session { name: "claude".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "ticket".into(), activity: 10, created: 2, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config { groups: vec![Group { name: "config".into(), members: vec!["claude".into()] }],
+                           manual_order: vec![], sort: SortKey::Activity };
+        let mut st = PickerState::build(sessions, &cfg);
+        st.enter_groups();
+        if edit { st.group_start_rename(); }
+        st
+    }
+
+    #[test]
+    fn draw_groups_lists_group_with_count_and_residual_anchor() {
+        let text = render_to_string(&groups_view(false));
+        assert!(text.contains("CONFIG"), "group header");
+        assert!(text.contains("· 1"), "member count");
+        assert!(text.contains("SESSIONS"), "residual anchor");
+        assert!(text.contains("Enter rename"), "group footer");
+    }
+
+    #[test]
+    fn draw_groups_shows_inline_rename_field() {
+        let mut st = groups_view(true);
+        st.group_edit_clear();
+        for c in "misc".chars() { st.group_edit_push(c); }
+        let text = render_to_string(&st);
+        assert!(text.contains("MISC"), "inline buffer uppercased");
     }
 
     #[test]

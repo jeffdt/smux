@@ -14,7 +14,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io::{self, stdout};
 use tmux::{apply_action, RealTmux, Tmux};
-use ui::{draw, map_key, map_search_key, Input, SearchInput};
+use ui::{draw, map_group_key, map_key, map_search_key, GroupInput, Input, SearchInput};
 
 const HELP: &str = "\
 smux - a fast tmux session picker
@@ -137,8 +137,31 @@ fn event_loop(
                     SearchInput::Exit => state.exit_search(),
                     SearchInput::None => {}
                 },
-                // Groups UI is wired in Task 5; placeholder keeps the build green.
-                Mode::Groups => {}
+                Mode::Groups => {
+                    if state.group_editing() {
+                        match map_search_key(key) {
+                            SearchInput::Char(c) => state.group_edit_push(c),
+                            SearchInput::Backspace => state.group_edit_backspace(),
+                            SearchInput::DeleteWord => state.group_edit_delete_word(),
+                            SearchInput::Clear => state.group_edit_clear(),
+                            SearchInput::Select => state.group_commit_rename(),
+                            SearchInput::Exit => state.group_cancel_rename(),
+                            SearchInput::Up | SearchInput::Down | SearchInput::None => {}
+                        }
+                    } else {
+                        match map_group_key(key) {
+                            GroupInput::Up => state.group_move_cursor(-1),
+                            GroupInput::Down => state.group_move_cursor(1),
+                            GroupInput::MoveUp => state.group_reorder(-1),
+                            GroupInput::MoveDown => state.group_reorder(1),
+                            GroupInput::New => state.group_new(),
+                            GroupInput::Rename => state.group_start_rename(),
+                            GroupInput::Delete => state.group_delete(),
+                            GroupInput::Exit => state.exit_groups(),
+                            GroupInput::None => {}
+                        }
+                    }
+                }
             }
         }
     }

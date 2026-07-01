@@ -54,8 +54,6 @@ pub const INITIAL_FOCUS: InitialFocus = InitialFocus::CurrentSession;
 pub enum Mode {
     Command,
     Search,
-    // Task 5 wires this in main.rs and ui.rs.
-    #[allow(dead_code)]
     Groups,
 }
 
@@ -114,11 +112,9 @@ pub struct PickerState {
     pub mode: Mode,
     pub query: String,
     search_cursor: usize,
-    /// Cursor position within the group list in `Mode::Groups`. Wired in Task 4.
-    #[allow(dead_code)]
+    /// Cursor position within the group list in `Mode::Groups`.
     pub group_cursor: usize,
-    /// In-flight rename buffer; `Some` while a rename is in progress. Wired in Task 4.
-    #[allow(dead_code)]
+    /// In-flight rename buffer; `Some` while a rename is in progress.
     pub group_edit: Option<String>,
 }
 
@@ -456,8 +452,7 @@ impl PickerState {
     }
 
     /// Enter the full-screen group-management mode with the cursor on the first
-    /// group (clamped when there are none). Wired in Task 5.
-    #[allow(dead_code)]
+    /// group (clamped when there are none).
     pub fn enter_groups(&mut self) {
         self.mode = Mode::Groups;
         self.group_edit = None;
@@ -465,8 +460,6 @@ impl PickerState {
     }
 
     /// Leave group mode back to session command mode, dropping any in-flight edit.
-    /// Wired in Task 5.
-    #[allow(dead_code)]
     pub fn exit_groups(&mut self) {
         if self.group_editing() {
             self.group_cancel_rename();
@@ -474,27 +467,21 @@ impl PickerState {
         self.mode = Mode::Command;
     }
 
-    /// The current cursor position within the group list. Wired in Task 4.
-    #[allow(dead_code)]
+    /// The current cursor position within the group list.
     pub fn group_cursor(&self) -> usize { self.group_cursor }
 
-    /// Whether a rename is currently in progress. Wired in Task 4.
-    #[allow(dead_code)]
+    /// Whether a rename is currently in progress.
     pub fn group_editing(&self) -> bool { self.group_edit.is_some() }
 
-    /// The in-flight rename buffer, if a rename is in progress. Wired in Task 4.
-    #[allow(dead_code)]
+    /// The in-flight rename buffer, if a rename is in progress.
     pub fn group_edit_buffer(&self) -> Option<&str> { self.group_edit.as_deref() }
 
     /// Number of live sessions in the residual `SESSIONS` bucket (ungrouped).
-    /// Wired in Task 4.
-    #[allow(dead_code)]
     pub fn residual_count(&self) -> usize {
         self.all.iter().filter(|s| !self.is_grouped(&s.name)).count()
     }
 
-    /// Move the group cursor by `delta`, clamped to the valid range. Wired in Task 5.
-    #[allow(dead_code)]
+    /// Move the group cursor by `delta`, clamped to the valid range.
     pub fn group_move_cursor(&mut self, delta: i32) {
         let len = self.groups.len() as i32;
         if len == 0 { self.group_cursor = 0; return; }
@@ -502,8 +489,6 @@ impl PickerState {
     }
 
     /// Reorder the selected group among the named groups (clamped at the ends).
-    /// Wired in Task 5.
-    #[allow(dead_code)]
     pub fn group_reorder(&mut self, delta: i32) {
         let gc = self.group_cursor;
         let target = gc as i32 + delta;
@@ -514,8 +499,6 @@ impl PickerState {
     }
 
     /// Append a new empty group after the last named group and begin naming it.
-    /// Wired in Task 5.
-    #[allow(dead_code)]
     pub fn group_new(&mut self) {
         self.groups.push(Group { name: String::new(), members: Vec::new() });
         self.group_cursor = self.groups.len() - 1;
@@ -523,29 +506,23 @@ impl PickerState {
     }
 
     /// Begin editing the selected group's name (seeded with its current name).
-    /// Wired in Task 5.
-    #[allow(dead_code)]
     pub fn group_start_rename(&mut self) {
         if let Some(g) = self.groups.get(self.group_cursor) {
             self.group_edit = Some(g.name.clone());
         }
     }
 
-    /// Push a character onto the in-flight rename buffer. Wired in Task 5.
-    #[allow(dead_code)]
+    /// Push a character onto the in-flight rename buffer.
     pub fn group_edit_push(&mut self, c: char) {
         if let Some(buf) = self.group_edit.as_mut() { buf.push(c); }
     }
 
-    /// Remove the last character from the in-flight rename buffer. Wired in Task 5.
-    #[allow(dead_code)]
+    /// Remove the last character from the in-flight rename buffer.
     pub fn group_edit_backspace(&mut self) {
         if let Some(buf) = self.group_edit.as_mut() { buf.pop(); }
     }
 
     /// Delete the trailing word from the in-flight rename buffer (Ctrl-W convention).
-    /// Wired in Task 5.
-    #[allow(dead_code)]
     pub fn group_edit_delete_word(&mut self) {
         if let Some(buf) = self.group_edit.as_mut() {
             let trimmed = buf.trim_end_matches(char::is_whitespace);
@@ -554,15 +531,13 @@ impl PickerState {
         }
     }
 
-    /// Clear the entire in-flight rename buffer (Ctrl-U convention). Wired in Task 5.
-    #[allow(dead_code)]
+    /// Clear the entire in-flight rename buffer (Ctrl-U convention).
     pub fn group_edit_clear(&mut self) {
         if let Some(buf) = self.group_edit.as_mut() { buf.clear(); }
     }
 
     /// Commit the in-flight name. An empty result discards a still-unnamed new group
-    /// and is a no-op for an already-named group. Wired in Task 5.
-    #[allow(dead_code)]
+    /// and is a no-op for an already-named group.
     pub fn group_commit_rename(&mut self) {
         let buf = match self.group_edit.take() { Some(b) => b, None => return };
         let name = buf.trim().to_string();
@@ -580,8 +555,7 @@ impl PickerState {
         }
     }
 
-    /// Cancel the in-flight edit, discarding a never-named new group. Wired in Task 5.
-    #[allow(dead_code)]
+    /// Cancel the in-flight edit, discarding a never-named new group.
     pub fn group_cancel_rename(&mut self) {
         self.group_edit = None;
         let gc = self.group_cursor;
@@ -592,8 +566,6 @@ impl PickerState {
     }
 
     /// Delete the selected group; its members fall back into the residual bucket.
-    /// Wired in Task 5.
-    #[allow(dead_code)]
     pub fn group_delete(&mut self) {
         if self.group_cursor >= self.groups.len() { return; }
         self.groups.remove(self.group_cursor);
