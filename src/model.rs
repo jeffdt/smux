@@ -76,6 +76,15 @@ pub struct Session {
     pub windows: Vec<Window>,
 }
 
+/// A user-named, ordered collection of sessions that renders as its own
+/// section above the residual `SESSIONS` bucket. Groups are durable: they
+/// persist even when empty and are removed only by an explicit delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    pub name: String,
+    pub members: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     SwitchSession(String),
@@ -93,7 +102,7 @@ use std::collections::HashSet;
 
 pub struct PickerState {
     all: Vec<Session>,
-    pub pinned: Vec<String>,
+    pub groups: Vec<Group>,
     pub manual_order: Vec<String>,
     pub sort: SortKey,
     expanded: HashSet<String>,
@@ -130,7 +139,7 @@ impl PickerState {
     ) -> PickerState {
         let mut state = PickerState {
             all: sessions,
-            pinned: config.pinned.clone(),
+            groups: config.groups.clone(),
             manual_order: config.manual_order.clone(),
             sort: config.sort,
             expanded: HashSet::new(),
@@ -168,25 +177,41 @@ impl PickerState {
         }
     }
 
-    pub fn is_pinned(&self, name: &str) -> bool {
-        self.pinned.iter().any(|p| p == name)
+    /// The index of the named group that owns `name`, if any. A session belongs to
+    /// at most one group (the first match wins if config lists it twice).
+    pub fn group_index_of(&self, name: &str) -> Option<usize> {
+        self.groups
+            .iter()
+            .position(|g| g.members.iter().any(|m| m == name))
+    }
+
+    /// Whether `name` sits in any named group (vs. the residual `SESSIONS` bucket).
+    pub fn is_grouped(&self, name: &str) -> bool {
+        self.group_index_of(name).is_some()
     }
 
     pub fn ordered(&self) -> Vec<&Session> {
         let mut out: Vec<&Session> = Vec::new();
-        for name in &self.pinned {
-            if let Some(s) = self.all.iter().find(|s| &s.name == name) {
-                out.push(s);
+        let mut seen: HashSet<&str> = HashSet::new();
+        for g in &self.groups {
+            for name in &g.members {
+                if seen.contains(name.as_str()) {
+                    continue; // guard against a session listed in two groups
+                }
+                if let Some(sess) = self.all.iter().find(|s| &s.name == name) {
+                    out.push(sess);
+                    seen.insert(name.as_str());
+                }
             }
         }
         let mut rest: Vec<&Session> = self
             .all
             .iter()
-            .filter(|s| !self.is_pinned(&s.name))
+            .filter(|s| !self.is_grouped(&s.name))
             .collect();
         if self.sort == SortKey::Manual {
             // Manually placed sessions first (in saved order, skipping any that
-            // are now pinned or gone), then everything unlisted by created
+            // are now grouped or gone), then everything unlisted by created
             // ascending so the newest session sinks to the bottom.
             rest.sort_by(|a, b| {
                 let rank = |s: &Session| {
@@ -298,49 +323,40 @@ impl PickerState {
         }
     }
 
-    pub fn toggle_pin(&mut self) {
-        let name = match self.cursor_session_name() {
-            Some(n) => n,
-            None => return,
-        };
-        if let Some(pos) = self.pinned.iter().position(|p| p == &name) {
-            self.pinned.remove(pos);
-        } else {
-            self.pinned.push(name.clone());
-        }
-        self.dirty = true;
-        self.focus_session(&name);
-    }
-
-    /// Reorder the session under the cursor. Pinned sessions reorder within the
-    /// pin list (any sort mode); unpinned sessions reorder only in Manual mode.
+    /// Reorder the session under the cursor. Task 2 generalizes this to cross group
+    /// boundaries; for now it reorders within a group or the manual residual.
     pub fn move_row(&mut self, delta: i32) {
-        let name = match self.cursor_session_name() {
-            Some(n) => n,
-            None => return,
-        };
-        if self.is_pinned(&name) {
-            self.move_pinned(delta);
+        let name = match self.cursor_session_name() { Some(n) => n, None => return };
+        if let Some(gi) = self.group_index_of(&name) {
+            let members = &mut self.groups[gi].members;
+            if let Some(pos) = members.iter().position(|m| m == &name) {
+                let target = pos as i32 + delta;
+                if target >= 0 && (target as usize) < members.len() {
+                    members.swap(pos, target as usize);
+                    self.dirty = true;
+                    self.focus_session(&name);
+                }
+            }
         } else if self.sort == SortKey::Manual {
             self.move_unpinned(delta);
         }
     }
 
-    /// Reorder an unpinned session within the manual order (Manual mode only).
-    /// The first move freezes the current unpinned display order into
+    /// Reorder an ungrouped session within the manual order (Manual mode only).
+    /// The first move freezes the current ungrouped display order into
     /// `manual_order` so the swap is well-defined even before anything was moved.
     fn move_unpinned(&mut self, delta: i32) {
         let name = match self.cursor_session_name() {
             Some(n) => n,
             None => return,
         };
-        if self.is_pinned(&name) {
+        if self.is_grouped(&name) {
             return;
         }
         let mut frozen: Vec<String> = self
             .ordered()
             .iter()
-            .filter(|s| !self.is_pinned(&s.name))
+            .filter(|s| !self.is_grouped(&s.name))
             .map(|s| s.name.clone())
             .collect();
         let pos = match frozen.iter().position(|p| p == &name) {
@@ -364,24 +380,6 @@ impl PickerState {
         self.dirty = true;
     }
 
-    pub fn move_pinned(&mut self, delta: i32) {
-        let name = match self.cursor_session_name() {
-            Some(n) => n,
-            None => return,
-        };
-        let pos = match self.pinned.iter().position(|p| p == &name) {
-            Some(p) => p as i32,
-            None => return, // unpinned: nothing to reorder
-        };
-        let target = pos + delta;
-        if target < 0 || target >= self.pinned.len() as i32 {
-            return;
-        }
-        self.pinned.swap(pos as usize, target as usize);
-        self.dirty = true;
-        self.focus_session(&name);
-    }
-
     pub fn enter_search(&mut self) {
         self.mode = Mode::Search;
         self.query.clear();
@@ -389,7 +387,7 @@ impl PickerState {
     }
 
     /// Leave search for command mode, parking the command cursor on whatever match
-    /// was highlighted so command verbs (pin, sort, reorder) act on it.
+    /// was highlighted so command verbs (sort, reorder) act on it.
     pub fn exit_search(&mut self) {
         let landing = self.search_cursor_name();
         self.mode = Mode::Command;
@@ -466,7 +464,7 @@ impl PickerState {
         }
     }
 
-    /// Switch action for the session at 1-based display number `n` (pinned #1
+    /// Switch action for the session at 1-based display number `n` (grouped #1
     /// down, stable regardless of what is expanded). `None` if out of range.
     pub fn action_for_session_number(&self, n: usize) -> Option<Action> {
         if n == 0 {
@@ -477,7 +475,7 @@ impl PickerState {
             .map(|s| Action::SwitchSession(s.name.clone()))
     }
 
-    /// Move the cursor to the session at 1-based display number `n` (pinned #1
+    /// Move the cursor to the session at 1-based display number `n` (grouped #1
     /// down, the same stable order as `action_for_session_number`) and expand it
     /// so its windows show. Unlike a plain-digit switch, this only relocates the
     /// highlight and reveals windows so one can be picked; it does not switch.
@@ -533,10 +531,10 @@ mod tests {
     #[test]
     fn initial_focus_prefers_precise_current_over_attached() {
         // Ordered top is "a"; "b" carries the attached flag, but the precise
-        // current (from $TMUX) is "c" — the precise signal must win.
+        // current (from $TMUX) is "c" -- the precise signal must win.
         let mut sessions = vec![s("a", 30, 1), s("b", 20, 2), s("c", 10, 3)];
         sessions[1].attached = true;
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state =
             PickerState::build_with_focus(sessions, &cfg, InitialFocus::CurrentSession, Some("c"));
         assert_eq!(state.cursor_session_name().as_deref(), Some("c"));
@@ -547,7 +545,7 @@ mod tests {
         // No precise current; the attached flag ("b") is the fallback.
         let mut sessions = vec![s("a", 30, 1), s("b", 10, 2)];
         sessions[1].attached = true;
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state =
             PickerState::build_with_focus(sessions, &cfg, InitialFocus::CurrentSession, None);
         assert_eq!(state.cursor_session_name().as_deref(), Some("b"));
@@ -557,7 +555,7 @@ mod tests {
     fn initial_focus_first_row_ignores_current_and_attached() {
         let mut sessions = vec![s("a", 30, 1), s("b", 10, 2)];
         sessions[1].attached = true;
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state =
             PickerState::build_with_focus(sessions, &cfg, InitialFocus::FirstRow, Some("b"));
         assert_eq!(state.cursor, 0);
@@ -567,7 +565,7 @@ mod tests {
     #[test]
     fn initial_focus_current_falls_back_to_first_row_when_nothing_matches() {
         let sessions = vec![s("a", 30, 1), s("b", 10, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state =
             PickerState::build_with_focus(sessions, &cfg, InitialFocus::CurrentSession, None);
         assert_eq!(state.cursor, 0);
@@ -579,7 +577,7 @@ mod tests {
         // Canary for the shipped INITIAL_FOCUS default; update if it is swapped.
         let mut sessions = vec![s("a", 30, 1), s("b", 10, 2)];
         sessions[1].attached = true;
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
         assert_eq!(state.cursor_session_name().as_deref(), Some("b"));
     }
@@ -587,7 +585,7 @@ mod tests {
     #[test]
     fn refocus_current_moves_to_named_session_and_no_ops_on_none() {
         let sessions = vec![s("a", 30, 1), s("b", 10, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg); // no attached -> row 0 ("a")
         state.refocus_current(Some("b"));
         assert_eq!(state.cursor_session_name().as_deref(), Some("b"));
@@ -596,21 +594,31 @@ mod tests {
     }
 
     #[test]
-    fn ordered_puts_pinned_first_then_unpinned_by_activity() {
-        let sessions = vec![s("a", 10, 1), s("b", 30, 2), s("c", 20, 3)];
-        let cfg = Config { pinned: vec!["c".into()], manual_order: vec![], sort: SortKey::Activity };
+    fn ordered_lists_groups_in_order_then_residual_by_activity() {
+        let sessions = vec![s("a", 10, 1), s("b", 30, 2), s("c", 20, 3), s("d", 40, 4)];
+        let cfg = Config {
+            groups: vec![
+                Group { name: "CONFIG".into(), members: vec!["c".into()] },
+                Group { name: "TOOLS".into(), members: vec!["a".into()] },
+            ],
+            manual_order: vec![],
+            sort: SortKey::Activity,
+        };
         let state = PickerState::build(sessions, &cfg);
         let names: Vec<&str> = state.ordered().iter().map(|s| s.name.as_str()).collect();
-        // c is pinned (first); then b (activity 30) before a (activity 10)
-        assert_eq!(names, vec!["c", "b", "a"]);
-        assert!(state.is_pinned("c"));
-        assert!(!state.is_pinned("a"));
+        // groups first in config order (c, then a), residual by activity desc (d 40, b 30)
+        assert_eq!(names, vec!["c", "a", "d", "b"]);
+        assert!(state.is_grouped("c"));
+        assert!(state.is_grouped("a"));
+        assert!(!state.is_grouped("b"));
+        assert_eq!(state.group_index_of("a"), Some(1));
+        assert_eq!(state.group_index_of("b"), None);
     }
 
     #[test]
     fn ordered_unpinned_by_created_when_configured() {
         let sessions = vec![s("a", 10, 100), s("b", 30, 50)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Created };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Created };
         let state = PickerState::build(sessions, &cfg);
         let names: Vec<&str> = state.ordered().iter().map(|s| s.name.as_str()).collect();
         // created desc: a (100) before b (50)
@@ -620,7 +628,7 @@ mod tests {
     #[test]
     fn ordered_breaks_ties_by_name_ascending() {
         let sessions = vec![s("zebra", 50, 1), s("apple", 50, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
         let names: Vec<&str> = state.ordered().iter().map(|s| s.name.as_str()).collect();
         // both have activity 50, so sort by name ascending: apple before zebra
@@ -634,7 +642,7 @@ mod tests {
             Window { index: 0, name: "e".into(), active: true },
             Window { index: 1, name: "l".into(), active: false },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
 
         // Collapsed: two session rows only.
@@ -661,60 +669,13 @@ mod tests {
     }
 
     #[test]
-    fn toggle_pin_adds_then_removes_and_marks_dirty() {
-        let sessions = vec![s("a", 30, 1), s("b", 20, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
-        let mut state = PickerState::build(sessions, &cfg);
-
-        // Cursor on "a"; pin it -> a becomes pinned, still focused.
-        state.toggle_pin();
-        assert_eq!(state.pinned, vec!["a".to_string()]);
-        assert!(state.dirty);
-        assert_eq!(state.cursor_session_name().as_deref(), Some("a"));
-
-        // Toggle again -> unpinned.
-        state.toggle_pin();
-        assert!(state.pinned.is_empty());
-    }
-
-    #[test]
-    fn move_pinned_reorders_within_pins_only() {
-        let sessions = vec![s("a", 30, 1), s("b", 20, 2), s("c", 10, 3)];
-        let cfg = Config { pinned: vec!["a".into(), "b".into()], manual_order: vec![], sort: SortKey::Activity };
-        let mut state = PickerState::build(sessions, &cfg);
-
-        // Cursor starts on "a" (first pinned). Move it down -> [b, a].
-        state.move_pinned(1);
-        assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
-        assert_eq!(state.cursor_session_name().as_deref(), Some("a"));
-        // Verify dirty flag is set after successful swap.
-        assert!(state.dirty);
-
-        // Focus the unpinned "c" and try to move it -> no-op.
-        state.focus_session("c");
-        state.dirty = false;
-        state.move_pinned(-1);
-        assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
-        // Unpinned session move must not dirty the state.
-        assert!(!state.dirty);
-
-        // Out-of-bounds no-op: focus first pinned "b", try to move up beyond start.
-        state.focus_session("b");
-        state.dirty = false;
-        state.move_pinned(-1);
-        assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
-        // Out-of-bounds move must not dirty the state.
-        assert!(!state.dirty);
-    }
-
-    #[test]
     fn selected_action_session_vs_window() {
         let mut sessions = vec![s("a", 30, 1)];
         sessions[0].windows = vec![
             Window { index: 0, name: "e".into(), active: true },
             Window { index: 3, name: "l".into(), active: false },
         ];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
 
         // On the session row.
@@ -729,7 +690,11 @@ mod tests {
     #[test]
     fn action_for_session_number_uses_stable_pinned_first_order() {
         let sessions = vec![s("a", 10, 1), s("b", 30, 2), s("c", 20, 3)];
-        let cfg = Config { pinned: vec!["c".into()], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config {
+            groups: vec![Group { name: "PINNED".into(), members: vec!["c".into()] }],
+            manual_order: vec![],
+            sort: SortKey::Activity,
+        };
         let mut state = PickerState::build(sessions, &cfg); // order: c, b, a
 
         assert_eq!(state.action_for_session_number(1), Some(Action::SwitchSession("c".into())));
@@ -747,7 +712,11 @@ mod tests {
     #[test]
     fn focus_session_number_moves_cursor_without_switching() {
         let sessions = vec![s("a", 10, 1), s("b", 30, 2), s("c", 20, 3)];
-        let cfg = Config { pinned: vec!["c".into()], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config {
+            groups: vec![Group { name: "PINNED".into(), members: vec!["c".into()] }],
+            manual_order: vec![],
+            sort: SortKey::Activity,
+        };
         let mut state = PickerState::build(sessions, &cfg); // order: c, b, a
 
         state.focus_session_number(3); // -> a
@@ -777,10 +746,10 @@ mod tests {
 
     #[test]
     fn ordered_manual_empty_list_is_created_ascending() {
-        // No manual placements yet: unpinned read oldest -> newest (created asc),
+        // No manual placements yet: ungrouped read oldest -> newest (created asc),
         // so a freshly created session naturally lands at the bottom.
         let sessions = vec![s("a", 99, 3), s("b", 99, 1), s("c", 99, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Manual };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Manual };
         let state = PickerState::build(sessions, &cfg);
         let names: Vec<&str> = state.ordered().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["b", "c", "a"]); // created 1, 2, 3
@@ -789,11 +758,11 @@ mod tests {
     #[test]
     fn ordered_manual_lists_then_remaining_excluding_pinned() {
         let sessions = vec![s("a", 1, 10), s("b", 1, 20), s("c", 1, 30), s("d", 1, 40)];
-        // d is pinned (and also wrongly listed in manual_order to prove it is
+        // d is in a PINNED group (and also wrongly listed in manual_order to prove it is
         // filtered out of the manual tail); c then a are the manual placements;
         // b is unlisted and falls in after, by created asc.
         let cfg = Config {
-            pinned: vec!["d".into()],
+            groups: vec![Group { name: "PINNED".into(), members: vec!["d".into()] }],
             manual_order: vec!["d".into(), "c".into(), "a".into()],
             sort: SortKey::Manual,
         };
@@ -807,7 +776,7 @@ mod tests {
         // "x" is the newest (highest created) and unlisted -> appears last.
         let sessions = vec![s("old", 1, 1), s("mid", 1, 2), s("x", 1, 99)];
         let cfg = Config {
-            pinned: vec![],
+            groups: vec![],
             manual_order: vec!["mid".into(), "old".into()],
             sort: SortKey::Manual,
         };
@@ -820,14 +789,14 @@ mod tests {
     fn move_row_unpinned_in_manual_freezes_then_swaps_and_dirties() {
         // Manual + empty list => base order is created asc: a(1), b(2), c(3).
         let sessions = vec![s("a", 9, 1), s("b", 9, 2), s("c", 9, 3)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Manual };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Manual };
         let mut state = PickerState::build(sessions, &cfg);
 
         state.focus_session("b");
         state.move_row(-1); // move b up past a
         let names: Vec<&str> = state.ordered().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["b", "a", "c"]);
-        // The full unpinned order is frozen into manual_order on the first move.
+        // The full ungrouped order is frozen into manual_order on the first move.
         assert_eq!(
             state.manual_order,
             vec!["b".to_string(), "a".to_string(), "c".to_string()]
@@ -845,7 +814,7 @@ mod tests {
     #[test]
     fn move_row_unpinned_is_noop_outside_manual_mode() {
         let sessions = vec![s("a", 30, 1), s("b", 20, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
         state.focus_session("b");
         state.move_row(1);
@@ -857,21 +826,21 @@ mod tests {
     fn move_row_on_pinned_reorders_pins_in_any_mode() {
         let sessions = vec![s("a", 30, 1), s("b", 20, 2)];
         let cfg = Config {
-            pinned: vec!["a".into(), "b".into()],
+            groups: vec![Group { name: "PINNED".into(), members: vec!["a".into(), "b".into()] }],
             manual_order: vec![],
             sort: SortKey::Activity,
         };
         let mut state = PickerState::build(sessions, &cfg);
         state.focus_session("a");
         state.move_row(1);
-        assert_eq!(state.pinned, vec!["b".to_string(), "a".to_string()]);
+        assert_eq!(state.groups[0].members, vec!["b".to_string(), "a".to_string()]);
         assert!(state.dirty);
     }
 
     #[test]
     fn cycle_sort_advances_mode_and_dirties() {
         let sessions = vec![s("a", 30, 1)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
         state.cycle_sort();
         assert_eq!(state.sort, SortKey::Created);
@@ -885,7 +854,7 @@ mod tests {
     #[test]
     fn default_mode_is_command() {
         let sessions = vec![s("a", 30, 1)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
         assert_eq!(state.mode, Mode::Command);
         assert!(state.query.is_empty());
@@ -894,7 +863,7 @@ mod tests {
     #[test]
     fn search_results_empty_query_is_normal_order() {
         let sessions = vec![s("a", 10, 1), s("b", 30, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let state = PickerState::build(sessions, &cfg);
         let names: Vec<&str> = state.search_results().iter().map(|s| s.name.as_str()).collect();
         // Same as ordered(): activity desc -> b, a
@@ -906,7 +875,7 @@ mod tests {
         // "prr" matches pr-review (p,r,-,r) tightly and provision not at all
         // (only one 'r'), so pr-review must rank first and scratch is excluded.
         let sessions = vec![s("provision", 1, 1), s("pr-review", 1, 2), s("scratch", 1, 3)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
         state.query = "prr".into();
         let names: Vec<&str> = state.search_results().iter().map(|s| s.name.as_str()).collect();
@@ -918,7 +887,7 @@ mod tests {
     #[test]
     fn enter_and_exit_search_preserves_match_under_command_cursor() {
         let sessions = vec![s("provision", 1, 1), s("pr-review", 1, 2), s("scratch", 1, 3)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
 
         state.enter_search();
@@ -939,7 +908,7 @@ mod tests {
     #[test]
     fn query_change_resets_to_top_and_move_clamps() {
         let sessions = vec![s("alpha", 1, 1), s("alto", 1, 2), s("alarm", 1, 3)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
         state.enter_search();
         state.search_push('a');
@@ -958,7 +927,7 @@ mod tests {
     #[test]
     fn search_selected_action_switches_to_highlighted() {
         let sessions = vec![s("provision", 1, 1), s("pr-review", 1, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
         state.enter_search();
         state.search_push('p');
@@ -973,7 +942,7 @@ mod tests {
     #[test]
     fn search_selected_action_is_none_with_no_matches() {
         let sessions = vec![s("alpha", 1, 1)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
         state.enter_search();
         state.search_push('z');
@@ -984,7 +953,7 @@ mod tests {
     #[test]
     fn search_backspace_shrinks_query_and_clears_to_empty() {
         let sessions = vec![s("api-gateway", 30, 1), s("web", 20, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
 
         state.enter_search();
@@ -1013,7 +982,7 @@ mod tests {
     #[test]
     fn search_delete_word_removes_trailing_word() {
         let sessions = vec![s("api-gateway", 30, 1)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
 
         state.enter_search();
@@ -1038,7 +1007,7 @@ mod tests {
     #[test]
     fn search_clear_empties_query() {
         let sessions = vec![s("api-gateway", 30, 1)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
 
         state.enter_search();
@@ -1059,7 +1028,7 @@ mod tests {
     #[test]
     fn toggle_all_expands_then_collapses_keeping_focus() {
         let sessions = vec![s("a", 30, 1), s("b", 20, 2)];
-        let cfg = Config { pinned: vec![], manual_order: vec![], sort: SortKey::Activity };
+        let cfg = Config { groups: vec![], manual_order: vec![], sort: SortKey::Activity };
         let mut state = PickerState::build(sessions, &cfg);
 
         assert_eq!(state.visible_rows().len(), 2); // both collapsed
