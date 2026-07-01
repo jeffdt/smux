@@ -69,6 +69,16 @@ impl Tmux for RealTmux {
                         current,
                     )
                 });
+                // A running tmux server can't have zero sessions, so parsing
+                // zero out of non-empty stdout means the lines didn't match
+                // FMT's expected 8-field shape. Log a preview to diagnose
+                // field-report crashes without needing raw output relayed by hand.
+                if sessions.is_empty() && !raw.trim().is_empty() {
+                    crate::debug::log(|| {
+                        let preview: String = raw.chars().take(400).collect();
+                        format!("gather: parsed zero sessions from non-empty stdout, raw preview: {preview:?}")
+                    });
+                }
                 Gathered { sessions, current }
             }
             Ok(o) => {
