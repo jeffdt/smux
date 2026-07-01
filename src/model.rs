@@ -201,6 +201,16 @@ impl PickerState {
         self.group_index_of(name).is_some()
     }
 
+    /// Group id for each entry of `ordered()`: `Some(group_index)` for a grouped
+    /// session, `None` for the residual bucket. Parallel to `ordered()` so the UI
+    /// can emit a section header wherever this value changes.
+    pub fn ordered_group_ids(&self) -> Vec<Option<usize>> {
+        self.ordered()
+            .iter()
+            .map(|s| self.group_index_of(&s.name))
+            .collect()
+    }
+
     pub fn ordered(&self) -> Vec<&Session> {
         let mut out: Vec<&Session> = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
@@ -1441,5 +1451,14 @@ mod tests {
         st.move_row(1);
         assert!(!st.is_grouped("e"));
         assert!(!st.dirty);
+    }
+
+    #[test]
+    fn ordered_group_ids_track_sections() {
+        let st = state_with_two_groups(); // G1=[a,b], G2=[c], residual d,e
+        assert_eq!(
+            st.ordered_group_ids(),
+            vec![Some(0), Some(0), Some(1), None, None]
+        );
     }
 }

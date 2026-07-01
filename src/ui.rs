@@ -14,9 +14,9 @@ const SEL_BG: Color = Color::DarkGray;
 /// Default column where a session's metadata begins, used when every visible
 /// name is short. It is also the floor for the shared metadata column.
 const META_COL: usize = 30;
-/// Fixed cells preceding a session name: jump number (2) + pin star (2) +
-/// expand glyph and its trailing space (2).
-const SESSION_PREFIX: usize = 6;
+/// Fixed cells preceding a session name: jump number (2) + expand glyph and
+/// its trailing space (2).
+const SESSION_PREFIX: usize = 4;
 /// Minimum gap kept between the longest visible name and its metadata when the
 /// shared column is anchored to that name rather than to META_COL.
 const META_GAP: usize = 2;
@@ -30,7 +30,7 @@ const META_BUDGET: usize = 18;
 const POPUP_MARGIN: u16 = 2;
 
 const FOOTER_HINT: &str =
-    "/ search · 1-9 jump · p pin · ⇧JK move · s sort · z all · q quit";
+    "/ search · 1-9 jump · ⇧JK move · g groups · s sort · z all · q quit";
 
 const SEARCH_FOOTER_HINT: &str = "↑↓ move · ⌃W word · ⌃U clear · Esc back";
 
@@ -143,27 +143,26 @@ fn draw_command(frame: &mut Frame, state: &PickerState, inner: Rect) {
     });
     let meta = MetaLayout::compute(session_refs, list_area.width);
 
+    let group_ids = state.ordered_group_ids();
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_line: Option<usize> = None;
-    let mut emitted_pinned_header = false;
-    let mut emitted_sessions_header = false;
+    let mut last_section: Option<Option<usize>> = None;
 
     for row in rows.iter() {
         match row {
             Row::Session(si) => {
                 let sess = ordered[*si];
-                let grouped = state.is_grouped(&sess.name);
-                if grouped && !emitted_pinned_header {
-                    items.push(header_item("PINNED", list_area.width));
-                    emitted_pinned_header = true;
-                }
-                if !grouped && !emitted_sessions_header {
-                    // Blank spacer to separate the PINNED section above.
-                    if emitted_pinned_header {
+                let section = group_ids[*si];
+                if last_section != Some(section) {
+                    if last_section.is_some() {
                         items.push(ListItem::new(Line::from("")));
                     }
-                    items.push(header_item("SESSIONS", list_area.width));
-                    emitted_sessions_header = true;
+                    let label = match section {
+                        Some(gi) => state.groups[gi].name.to_uppercase(),
+                        None => "SESSIONS".to_string(),
+                    };
+                    items.push(header_item(&label, list_area.width));
+                    last_section = Some(section);
                 }
                 let selected = Some(*row) == cursor_row;
                 if selected {
@@ -174,7 +173,6 @@ fn draw_command(frame: &mut Frame, state: &PickerState, inner: Rect) {
                 let number = if *si < 9 { Some(*si + 1) } else { None };
                 items.push(session_item(
                     sess,
-                    grouped,
                     state.is_expanded(&sess.name),
                     selected,
                     number,
@@ -242,7 +240,7 @@ fn draw_search(frame: &mut Frame, state: &PickerState, inner: Rect) {
                 selected_line = Some(items.len());
             }
             // Flat, collapsed, no jump number (None), normal metadata.
-            items.push(session_item(sess, state.is_grouped(&sess.name), false, selected, None, meta));
+            items.push(session_item(sess, false, selected, None, meta));
         }
     }
     let list = List::new(items)
@@ -307,39 +305,29 @@ impl MetaLayout {
 
 fn session_item(
     sess: &Session,
-    pinned: bool,
     expanded: bool,
     selected: bool,
     number: Option<usize>,
     meta: MetaLayout,
 ) -> ListItem<'static> {
     let glyph = if expanded { "▾" } else { "▸" };
-    let pin = if pinned { "★ " } else { "  " };
-    let num = match number {
-        Some(n) => format!("{n} "),
-        None => "  ".to_string(),
-    };
+    let num = match number { Some(n) => format!("{n} "), None => "  ".to_string() };
     let name_style = if sess.attached {
         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
-    let prefix_len = SESSION_PREFIX + sess.name.chars().count(); // num + pin + "glyph " + name
+    let prefix_len = SESSION_PREFIX + sess.name.chars().count(); // num + "glyph " + name
     let pad = meta.col.saturating_sub(prefix_len);
     let count = window_count(sess.windows.len());
     let count_pad = meta.count_width.saturating_sub(count.chars().count());
     let age = activity_age(sess.activity);
     ListItem::new(Line::from(vec![
         Span::styled(num, secondary(selected)),
-        Span::styled(pin.to_string(), Style::default().fg(ACCENT)),
         Span::styled(format!("{glyph} "), secondary(selected)),
         Span::styled(sess.name.clone(), name_style),
         Span::styled(
-            format!(
-                "{}{count}{} · {age}",
-                " ".repeat(pad),
-                " ".repeat(count_pad),
-            ),
+            format!("{}{count}{} · {age}", " ".repeat(pad), " ".repeat(count_pad)),
             secondary(selected),
         ),
     ]))
@@ -349,7 +337,7 @@ fn window_item(win: &Window, last: bool, selected: bool) -> ListItem<'static> {
     // Two leading spaces align under the session's number gutter. No window
     // number is shown: numbers are reserved for things you can jump to, and
     // windows aren't jumpable yet.
-    let connector = if last { "     └─ " } else { "     ├─ " };
+    let connector = if last { "   └─ " } else { "   ├─ " };
     let dot = if win.active { "●" } else { " " };
     ListItem::new(Line::from(vec![
         Span::styled(connector.to_string(), secondary(selected)),
@@ -369,7 +357,7 @@ pub enum Input {
     Select,
     Switch(usize),
     Focus(usize),
-    Pin,
+    EnterGroups,
     MoveUp,
     MoveDown,
     CycleSort,
@@ -427,7 +415,7 @@ pub fn map_key(key: KeyEvent) -> Input {
         KeyCode::Char('h') | KeyCode::Left => Input::Collapse,
         KeyCode::Char('z') => Input::ToggleAll,
         KeyCode::Enter => Input::Select,
-        KeyCode::Char('p') => Input::Pin,
+        KeyCode::Char('g') => Input::EnterGroups,
         KeyCode::Char('K') if shift => Input::MoveUp,
         KeyCode::Char('J') if shift => Input::MoveDown,
         KeyCode::Char('s') => Input::CycleSort,
@@ -579,7 +567,8 @@ mod tests {
         assert_eq!(map_key(key(KeyCode::Right)), Input::Expand);
         assert_eq!(map_key(key(KeyCode::Char('h'))), Input::Collapse);
         assert_eq!(map_key(key(KeyCode::Enter)), Input::Select);
-        assert_eq!(map_key(key(KeyCode::Char('p'))), Input::Pin);
+        assert_eq!(map_key(key(KeyCode::Char('g'))), Input::EnterGroups);
+        assert_eq!(map_key(key(KeyCode::Char('p'))), Input::None);
         assert_eq!(map_key(key(KeyCode::Char('q'))), Input::Quit);
         assert_eq!(map_key(key(KeyCode::Esc)), Input::Quit);
         assert_eq!(map_key(shift(KeyCode::Char('K'))), Input::MoveUp);
@@ -631,6 +620,44 @@ mod tests {
     }
 
     #[test]
+    fn draw_no_longer_renders_pin_star() {
+        let sessions = vec![
+            Session { name: "claude".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config { groups: vec![Group { name: "G".into(), members: vec!["claude".into()] }],
+                           manual_order: vec![], sort: SortKey::Activity };
+        let text = render_to_string(&PickerState::build(sessions, &cfg));
+        assert!(!text.contains('★'), "pin star retired");
+    }
+
+    #[test]
+    fn draw_shows_multiple_group_headers_in_order() {
+        let sessions = vec![
+            Session { name: "claude".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "tent".into(), activity: 20, created: 2, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "ticket".into(), activity: 10, created: 3, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config {
+            groups: vec![
+                Group { name: "config".into(), members: vec!["claude".into()] },
+                Group { name: "tools".into(), members: vec!["tent".into()] },
+            ],
+            manual_order: vec![], sort: SortKey::Activity,
+        };
+        let state = PickerState::build(sessions, &cfg);
+        let text = render_to_string(&state);
+        assert!(text.contains("CONFIG"), "group name uppercased");
+        assert!(text.contains("TOOLS"));
+        assert!(text.contains("SESSIONS"));
+        let (c, t, s) = (text.find("CONFIG"), text.find("TOOLS"), text.find("SESSIONS"));
+        assert!(c < t && t < s, "sections render top-to-bottom");
+    }
+
+    #[test]
     fn draw_shows_footer_hints() {
         let sessions = vec![
             Session { name: "main".into(), activity: 100, created: 1, attached: false,
@@ -640,7 +667,7 @@ mod tests {
         let state = PickerState::build(sessions, &cfg);
         let text = render_to_string(&state);
         assert!(text.contains("search"), "footer hint: search present");
-        assert!(text.contains("pin"), "footer hint: pin present");
+        assert!(text.contains("groups"), "footer hint: groups present");
         assert!(text.contains("sort"), "footer hint: sort present");
         assert!(text.contains("quit"), "footer hint: quit present");
     }
