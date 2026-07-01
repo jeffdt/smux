@@ -137,6 +137,8 @@ fn event_loop(
                     SearchInput::Exit => state.exit_search(),
                     SearchInput::None => {}
                 },
+                // Groups UI is wired in Task 5; placeholder keeps the build green.
+                Mode::Groups => {}
             }
         }
     }

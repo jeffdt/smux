@@ -117,6 +117,8 @@ pub fn draw(frame: &mut Frame, state: &PickerState) {
     match state.mode {
         Mode::Command => draw_command(frame, state, inner),
         Mode::Search => draw_search(frame, state, inner),
+        // Groups draw is implemented in Task 4; route to command view temporarily.
+        Mode::Groups => draw_command(frame, state, inner),
     }
 }
 

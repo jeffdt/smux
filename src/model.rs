@@ -46,14 +46,17 @@ pub enum InitialFocus {
 pub const INITIAL_FOCUS: InitialFocus = InitialFocus::CurrentSession;
 
 /// Picker interaction mode. `Command` is the single-keystroke command UI;
-/// `Search` routes typed characters into a fuzzy-filter query. Which mode the
-/// picker launches in is the `DEFAULT_MODE` seam below (cf. `INITIAL_FOCUS`),
-/// so a future `default_mode` config key can select it without reworking the
-/// loop.
+/// `Search` routes typed characters into a fuzzy-filter query; `Groups` is the
+/// full-screen group-management overlay. Which mode the picker launches in is
+/// the `DEFAULT_MODE` seam below (cf. `INITIAL_FOCUS`), so a future
+/// `default_mode` config key can select it without reworking the loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Command,
     Search,
+    // Task 5 wires this in main.rs and ui.rs.
+    #[allow(dead_code)]
+    Groups,
 }
 
 /// The mode the picker starts in. Swap this one constant (or later wire it to
@@ -111,6 +114,12 @@ pub struct PickerState {
     pub mode: Mode,
     pub query: String,
     search_cursor: usize,
+    /// Cursor position within the group list in `Mode::Groups`. Wired in Task 4.
+    #[allow(dead_code)]
+    pub group_cursor: usize,
+    /// In-flight rename buffer; `Some` while a rename is in progress. Wired in Task 4.
+    #[allow(dead_code)]
+    pub group_edit: Option<String>,
 }
 
 fn sort_value(s: &Session, key: SortKey) -> i64 {
@@ -148,6 +157,8 @@ impl PickerState {
             mode: DEFAULT_MODE,
             query: String::new(),
             search_cursor: 0,
+            group_cursor: 0,
+            group_edit: None,
         };
         state.apply_initial_focus(focus, current);
         state
@@ -431,6 +442,152 @@ impl PickerState {
     /// the choice persists.
     pub fn cycle_sort(&mut self) {
         self.sort = self.sort.next();
+        self.dirty = true;
+    }
+
+    /// Enter the full-screen group-management mode with the cursor on the first
+    /// group (clamped when there are none). Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn enter_groups(&mut self) {
+        self.mode = Mode::Groups;
+        self.group_edit = None;
+        self.group_cursor = self.group_cursor.min(self.groups.len().saturating_sub(1));
+    }
+
+    /// Leave group mode back to session command mode, dropping any in-flight edit.
+    /// Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn exit_groups(&mut self) {
+        if self.group_editing() {
+            self.group_cancel_rename();
+        }
+        self.mode = Mode::Command;
+    }
+
+    /// The current cursor position within the group list. Wired in Task 4.
+    #[allow(dead_code)]
+    pub fn group_cursor(&self) -> usize { self.group_cursor }
+
+    /// Whether a rename is currently in progress. Wired in Task 4.
+    #[allow(dead_code)]
+    pub fn group_editing(&self) -> bool { self.group_edit.is_some() }
+
+    /// The in-flight rename buffer, if a rename is in progress. Wired in Task 4.
+    #[allow(dead_code)]
+    pub fn group_edit_buffer(&self) -> Option<&str> { self.group_edit.as_deref() }
+
+    /// Number of live sessions in the residual `SESSIONS` bucket (ungrouped).
+    /// Wired in Task 4.
+    #[allow(dead_code)]
+    pub fn residual_count(&self) -> usize {
+        self.all.iter().filter(|s| !self.is_grouped(&s.name)).count()
+    }
+
+    /// Move the group cursor by `delta`, clamped to the valid range. Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_move_cursor(&mut self, delta: i32) {
+        let len = self.groups.len() as i32;
+        if len == 0 { self.group_cursor = 0; return; }
+        self.group_cursor = (self.group_cursor as i32 + delta).clamp(0, len - 1) as usize;
+    }
+
+    /// Reorder the selected group among the named groups (clamped at the ends).
+    /// Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_reorder(&mut self, delta: i32) {
+        let gc = self.group_cursor;
+        let target = gc as i32 + delta;
+        if target < 0 || target >= self.groups.len() as i32 { return; }
+        self.groups.swap(gc, target as usize);
+        self.group_cursor = target as usize;
+        self.dirty = true;
+    }
+
+    /// Append a new empty group after the last named group and begin naming it.
+    /// Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_new(&mut self) {
+        self.groups.push(Group { name: String::new(), members: Vec::new() });
+        self.group_cursor = self.groups.len() - 1;
+        self.group_edit = Some(String::new());
+    }
+
+    /// Begin editing the selected group's name (seeded with its current name).
+    /// Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_start_rename(&mut self) {
+        if let Some(g) = self.groups.get(self.group_cursor) {
+            self.group_edit = Some(g.name.clone());
+        }
+    }
+
+    /// Push a character onto the in-flight rename buffer. Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_edit_push(&mut self, c: char) {
+        if let Some(buf) = self.group_edit.as_mut() { buf.push(c); }
+    }
+
+    /// Remove the last character from the in-flight rename buffer. Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_edit_backspace(&mut self) {
+        if let Some(buf) = self.group_edit.as_mut() { buf.pop(); }
+    }
+
+    /// Delete the trailing word from the in-flight rename buffer (Ctrl-W convention).
+    /// Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_edit_delete_word(&mut self) {
+        if let Some(buf) = self.group_edit.as_mut() {
+            let trimmed = buf.trim_end_matches(char::is_whitespace);
+            let cut = trimmed.trim_end_matches(|c: char| !c.is_whitespace());
+            buf.truncate(cut.len());
+        }
+    }
+
+    /// Clear the entire in-flight rename buffer (Ctrl-U convention). Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_edit_clear(&mut self) {
+        if let Some(buf) = self.group_edit.as_mut() { buf.clear(); }
+    }
+
+    /// Commit the in-flight name. An empty result discards a still-unnamed new group
+    /// and is a no-op for an already-named group. Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_commit_rename(&mut self) {
+        let buf = match self.group_edit.take() { Some(b) => b, None => return };
+        let name = buf.trim().to_string();
+        let gc = self.group_cursor;
+        if name.is_empty() {
+            if self.groups.get(gc).map(|g| g.name.is_empty()).unwrap_or(false) {
+                self.groups.remove(gc);
+                self.group_cursor = self.group_cursor.min(self.groups.len().saturating_sub(1));
+            }
+            return;
+        }
+        if let Some(g) = self.groups.get_mut(gc) {
+            g.name = name;
+            self.dirty = true;
+        }
+    }
+
+    /// Cancel the in-flight edit, discarding a never-named new group. Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_cancel_rename(&mut self) {
+        self.group_edit = None;
+        let gc = self.group_cursor;
+        if self.groups.get(gc).map(|g| g.name.is_empty()).unwrap_or(false) {
+            self.groups.remove(gc);
+            self.group_cursor = self.group_cursor.min(self.groups.len().saturating_sub(1));
+        }
+    }
+
+    /// Delete the selected group; its members fall back into the residual bucket.
+    /// Wired in Task 5.
+    #[allow(dead_code)]
+    pub fn group_delete(&mut self) {
+        if self.group_cursor >= self.groups.len() { return; }
+        self.groups.remove(self.group_cursor);
+        self.group_cursor = self.group_cursor.min(self.groups.len().saturating_sub(1));
         self.dirty = true;
     }
 
@@ -1097,6 +1254,115 @@ mod tests {
         assert!(!state.is_expanded("a"));
         assert!(!state.is_expanded("b"));
         assert_eq!(state.visible_rows().len(), 2);
+    }
+
+    fn grouped_state() -> PickerState {
+        let sessions = vec![s("a", 1, 1), s("b", 1, 2), s("c", 1, 3)];
+        let cfg = Config {
+            groups: vec![
+                Group { name: "G1".into(), members: vec!["a".into()] },
+                Group { name: "G2".into(), members: vec!["b".into()] },
+            ],
+            manual_order: vec![],
+            sort: SortKey::Activity,
+        };
+        PickerState::build(sessions, &cfg)
+    }
+
+    #[test]
+    fn group_new_appends_empty_and_starts_rename() {
+        let mut st = grouped_state();
+        st.enter_groups();
+        st.group_new();
+        assert_eq!(st.groups.len(), 3);
+        assert_eq!(st.groups[2].name, "");
+        assert!(st.groups[2].members.is_empty());
+        assert_eq!(st.group_cursor(), 2);
+        assert!(st.group_editing());
+        for c in "TOOLS".chars() { st.group_edit_push(c); }
+        st.group_commit_rename();
+        assert_eq!(st.groups[2].name, "TOOLS");
+        assert!(!st.group_editing());
+        assert!(st.dirty);
+    }
+
+    #[test]
+    fn group_new_then_cancel_discards() {
+        let mut st = grouped_state();
+        st.enter_groups();
+        st.group_new();
+        st.group_cancel_rename();
+        assert_eq!(st.groups.len(), 2);
+        assert!(!st.group_editing());
+    }
+
+    #[test]
+    fn group_rename_existing_commits_and_cancel_reverts() {
+        let mut st = grouped_state();
+        st.enter_groups();
+        st.group_move_cursor(1); // cursor on G2
+        st.group_start_rename();
+        st.group_edit_clear();
+        for c in "MISC".chars() { st.group_edit_push(c); }
+        st.group_commit_rename();
+        assert_eq!(st.groups[1].name, "MISC");
+
+        st.group_start_rename();
+        st.group_edit_clear();
+        st.group_cancel_rename();
+        assert_eq!(st.groups[1].name, "MISC"); // unchanged on cancel
+    }
+
+    #[test]
+    fn group_reorder_swaps_named_groups() {
+        let mut st = grouped_state();
+        st.enter_groups();
+        st.group_reorder(1); // move G1 down
+        assert_eq!(st.groups[0].name, "G2");
+        assert_eq!(st.groups[1].name, "G1");
+        assert!(st.dirty);
+    }
+
+    #[test]
+    fn group_delete_spills_members_to_residual() {
+        let mut st = grouped_state();
+        st.enter_groups(); // cursor on G1 (member a)
+        st.group_delete();
+        assert_eq!(st.groups.len(), 1);
+        assert_eq!(st.groups[0].name, "G2");
+        assert!(!st.is_grouped("a")); // a fell into the residual
+        assert!(st.dirty);
+    }
+
+    #[test]
+    fn residual_count_excludes_grouped() {
+        let st = grouped_state(); // a,b grouped; c residual
+        assert_eq!(st.residual_count(), 1);
+    }
+
+    #[test]
+    fn group_edit_buffer_backspace_and_delete_word() {
+        let mut st = grouped_state();
+        st.enter_groups();
+        st.group_start_rename();
+        // seed with the group's current name so there is content to edit
+        assert!(st.group_edit_buffer().is_some());
+        for c in " extra word".chars() { st.group_edit_push(c); }
+        // buffer is "G1 extra word"
+        st.group_edit_delete_word(); // drops "word"
+        assert_eq!(st.group_edit_buffer(), Some("G1 extra "));
+        st.group_edit_backspace(); // drops trailing space
+        assert_eq!(st.group_edit_buffer(), Some("G1 extra"));
+    }
+
+    #[test]
+    fn enter_and_exit_groups_toggles_mode() {
+        let mut st = grouped_state();
+        assert_eq!(st.mode, Mode::Command);
+        st.enter_groups();
+        assert_eq!(st.mode, Mode::Groups);
+        st.exit_groups();
+        assert_eq!(st.mode, Mode::Command);
     }
 
     fn state_with_two_groups() -> PickerState {
