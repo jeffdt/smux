@@ -146,6 +146,10 @@ fn draw_command(frame: &mut Frame, state: &PickerState, inner: Rect) {
     let mut items: Vec<ListItem> = Vec::new();
     let mut selected_line: Option<usize> = None;
     let mut last_section: Option<Option<usize>> = None;
+    // Named groups whose header is already emitted are those with index < this.
+    // Empty groups produce no session rows, so we "catch up" and emit their bare
+    // (dimmed) headers when we pass their position or at the end of the list.
+    let mut next_group: usize = 0;
 
     for row in rows.iter() {
         match row {
@@ -153,14 +157,23 @@ fn draw_command(frame: &mut Frame, state: &PickerState, inner: Rect) {
                 let sess = ordered[*si];
                 let section = group_ids[*si];
                 if last_section != Some(section) {
-                    if last_section.is_some() {
-                        items.push(ListItem::new(Line::from("")));
-                    }
-                    let label = match section {
-                        Some(gi) => state.groups[gi].name.to_uppercase(),
-                        None => "SESSIONS".to_string(),
+                    let target = match section {
+                        Some(gi) => gi,
+                        None => state.groups.len(),
                     };
-                    items.push(header_item(&label, list_area.width));
+                    while next_group < target {
+                        push_empty_group_header(&mut items, &state.groups[next_group].name, list_area.width);
+                        next_group += 1;
+                    }
+                    match section {
+                        Some(gi) => {
+                            push_section_header(&mut items, &state.groups[gi].name.to_uppercase(), list_area.width, ACCENT);
+                            next_group = gi + 1;
+                        }
+                        None => {
+                            push_section_header(&mut items, "SESSIONS", list_area.width, ACCENT);
+                        }
+                    }
                     last_section = Some(section);
                 }
                 let selected = Some(*row) == cursor_row;
@@ -188,6 +201,11 @@ fn draw_command(frame: &mut Frame, state: &PickerState, inner: Rect) {
                 items.push(window_item(&sess.windows[*wi], last, selected));
             }
         }
+    }
+    // Trailing empty groups (after the last session row, with no residual below).
+    while next_group < state.groups.len() {
+        push_empty_group_header(&mut items, &state.groups[next_group].name, list_area.width);
+        next_group += 1;
     }
 
     let list = List::new(items).highlight_style(
@@ -279,9 +297,11 @@ fn draw_groups(frame: &mut Frame, state: &PickerState, inner: Rect) {
                 Span::styled("▏", Style::default().fg(ACCENT)),
             ])
         } else {
+            // Empty groups read as dimmed shelves, matching session mode.
+            let name_color = if g.members.is_empty() { DIM } else { ACCENT };
             Line::from(vec![
                 Span::styled(g.name.to_uppercase(),
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+                    Style::default().fg(name_color).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("  · {}", g.members.len()), secondary(selected)),
             ])
         };
@@ -307,12 +327,26 @@ fn draw_groups(frame: &mut Frame, state: &PickerState, inner: Rect) {
     frame.render_widget(footer, footer_area);
 }
 
-fn header_item(label: &str, width: u16) -> ListItem<'static> {
+/// Push a section header, preceding it with a blank spacer unless it is the very
+/// first item in the list.
+fn push_section_header(items: &mut Vec<ListItem<'static>>, label: &str, width: u16, color: Color) {
+    if !items.is_empty() {
+        items.push(ListItem::new(Line::from("")));
+    }
+    items.push(header_item(label, width, color));
+}
+
+/// Push a bare, dimmed header for an empty named group (a labeled shelf to fill).
+fn push_empty_group_header(items: &mut Vec<ListItem<'static>>, name: &str, width: u16) {
+    push_section_header(items, &name.to_uppercase(), width, DIM);
+}
+
+fn header_item(label: &str, width: u16, color: Color) -> ListItem<'static> {
     let rule_len = (width as usize).saturating_sub(label.chars().count() + 2);
     ListItem::new(Line::from(vec![
         Span::styled(
             label.to_string(),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
         Span::styled("─".repeat(rule_len), Style::default().fg(DIM)),
@@ -725,6 +759,53 @@ mod tests {
         assert!(text.contains("SESSIONS"));
         let (c, t, s) = (text.find("CONFIG"), text.find("TOOLS"), text.find("SESSIONS"));
         assert!(c < t && t < s, "sections render top-to-bottom");
+    }
+
+    #[test]
+    fn draw_shows_empty_group_header_dimmed_in_session_mode() {
+        // A named group with no members must still render its header (a shelf to
+        // fill), grayed out, and it sits in config order between the group above
+        // and the residual SESSIONS below.
+        let sessions = vec![
+            Session { name: "claude".into(), activity: 30, created: 1, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+            Session { name: "loose".into(), activity: 10, created: 2, attached: false,
+                      windows: vec![Window { index: 0, name: "w".into(), active: true }] },
+        ];
+        let cfg = Config {
+            groups: vec![
+                Group { name: "config".into(), members: vec!["claude".into()] },
+                Group { name: "tools".into(), members: vec![] }, // empty shelf
+            ],
+            manual_order: vec![], sort: SortKey::Activity,
+        };
+        let state = PickerState::build(sessions, &cfg);
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        let mut text = String::new();
+        let mut tools_dim = false;
+        let mut config_accent = false;
+        for y in 0..buf.area.height {
+            let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            text.push_str(&line);
+            text.push('\n');
+            let first_letter = |needle: &str| line.find(needle).map(|i| i as u16);
+            if let Some(x) = first_letter("TOOLS") {
+                tools_dim = buf[(x, y)].style().fg == Some(Color::DarkGray);
+            }
+            if let Some(x) = first_letter("CONFIG") {
+                config_accent = buf[(x, y)].style().fg == Some(ACCENT);
+            }
+        }
+        // Order: CONFIG (populated) then TOOLS (empty) then SESSIONS (residual).
+        let (c, t, s) = (text.find("CONFIG"), text.find("TOOLS"), text.find("SESSIONS"));
+        assert!(c < t && t < s, "empty group header sits in order: got {c:?} {t:?} {s:?}");
+        assert!(tools_dim, "empty group header renders dimmed (gray)");
+        assert!(config_accent, "populated group header keeps the accent color");
     }
 
     #[test]
